@@ -1,0 +1,3 @@
+[submodule "dawn"]
+	path = third_party/dawn
+	url = https://github.com/google/dawn.git

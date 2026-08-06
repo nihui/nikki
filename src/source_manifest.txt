@@ -1,0 +1,46 @@
+# Copyright 2026 nihui
+# SPDX-License-Identifier: Apache-2.0
+
+# group path
+#
+# The global order is the amalgamation order. CMake derives the modular
+# target source list from every .cpp entry in this file.
+
+driver src/common.h
+driver src/vulkan_internal.h
+driver src/abi_guard.h
+driver src/backend/device_profile.h
+driver src/backend/objects.h
+driver src/backend/device.h
+driver src/backend/runtime.h
+driver src/backend/dispatch.h
+driver src/backend/shader_module.h
+translator src/translator/translator_internal.h
+translator src/translator/translator_stages.h
+driver src/backend/device_profile.cpp
+driver src/backend/device.cpp
+driver src/instance.cpp
+driver src/device.cpp
+driver src/memory.cpp
+translator src/translator/spirv_prepare.cpp
+translator src/translator/storage16.cpp
+translator src/translator/immediate.cpp
+translator src/translator/invocation.cpp
+translator src/translator/subgroup.cpp
+translator src/translator/tint_legalize.cpp
+translator src/translator/cooperative_matrix_spirv.cpp
+translator src/translator/cooperative_matrix_tint.cpp
+translator src/translator/cooperative_matrix_wgsl.cpp
+translator src/translator/cooperative_matrix_probe.cpp
+translator src/translator/reflection.cpp
+translator src/translator/tint_codegen.cpp
+driver src/backend/shader_module.cpp
+driver src/backend/dispatch.cpp
+driver src/backend/runtime.cpp
+driver src/pipeline.cpp
+driver src/pipeline_cache.cpp
+driver src/command.cpp
+driver src/queue.cpp
+driver src/sync.cpp
+driver src/vulkan_procs.inc
+driver src/entrypoints.cpp
