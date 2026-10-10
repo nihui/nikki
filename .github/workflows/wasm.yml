@@ -20,7 +20,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # Dawn dependencies are bootstrapped by tools/bootstrap_dawn.py.
+          # Recursive checkout reaches inaccessible Chromium internal submodules.
+          submodules: true
 
       - name: Install build dependencies
         run: |
