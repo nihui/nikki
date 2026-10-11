@@ -45,6 +45,23 @@ foreach(nikki_test_target IN LISTS nikki_test_targets)
 endforeach()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+    # Keep the compute test browser-loadable, rather than merely proving that
+    # the Emscripten linker can produce a wasm file.
+    target_link_options(test_nikki_compute PRIVATE
+        "--no-entry"
+        "-sMODULARIZE=1"
+        "-sEXPORT_ES6=1"
+        "-sENVIRONMENT=worker"
+        "-sEXPORTED_FUNCTIONS=['_main']"
+        "-sEXPORTED_RUNTIME_METHODS=['ccall']")
+    set_target_properties(test_nikki_compute PROPERTIES SUFFIX ".js")
+    foreach(nikki_browser_asset webgpu_test.html webgpu_test_worker.mjs)
+        configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/browser/${nikki_browser_asset}"
+            "${CMAKE_CURRENT_BINARY_DIR}/${nikki_browser_asset}"
+            COPYONLY)
+    endforeach()
+
     if(NOT TARGET nikki)
         message(FATAL_ERROR "nikki tests require NIKKI_BUILD_STATIC")
     endif()

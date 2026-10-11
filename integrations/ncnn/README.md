@@ -39,7 +39,7 @@ ncnn does not carry Puppeteer, HTML, Worker, or nikki validation support.
 Install the local runner dependency with:
 
 ```bash
-npm install --prefix integrations/ncnn/browser
+npm ci --prefix tests/browser
 ```
 
 Configure the browser superbuild after initializing Dawn:
@@ -60,7 +60,7 @@ accepts the test module path as its positional argument:
 ```bash
 cmake -E env \
     TESTS_EXECUTABLE_LOADER=/path/to/node \
-    TESTS_EXECUTABLE_LOADER_ARGUMENTS=$PWD/integrations/ncnn/browser/run_webgpu_test.mjs \
+    TESTS_EXECUTABLE_LOADER_ARGUMENTS=$PWD/tests/browser/run_webgpu_test.mjs \
     NIKKI_NCNN_TEST_CHROME=/path/to/chrome \
     NIKKI_NCNN_TEST_ADAPTER=swiftshader \
     ctest --test-dir build-ncnn-webgpu --output-on-failure --timeout 14400

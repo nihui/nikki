@@ -11,11 +11,11 @@ import puppeteer from "puppeteer-core";
 const test_timeout_ms = 14400000;
 
 function parse_arguments(argv) {
-    const adapter = process.env.NIKKI_NCNN_TEST_ADAPTER || "";
+    const adapter = process.env.NIKKI_WEBGPU_TEST_ADAPTER || process.env.NIKKI_NCNN_TEST_ADAPTER || "";
     const options = {
-        chrome: process.env.NIKKI_NCNN_TEST_CHROME || "",
+        chrome: process.env.NIKKI_WEBGPU_TEST_CHROME || process.env.NIKKI_NCNN_TEST_CHROME || "",
         expected_adapter: adapter === "swiftshader" ? "swiftshader" : "",
-        expected_version: process.env.NIKKI_NCNN_TEST_CHROME_VERSION || "",
+        expected_version: process.env.NIKKI_WEBGPU_TEST_CHROME_VERSION || process.env.NIKKI_NCNN_TEST_CHROME_VERSION || "",
         hardware: adapter === "hardware",
         module: "",
         no_sandbox: adapter === "swiftshader",
@@ -67,7 +67,7 @@ function parse_arguments(argv) {
         if (!options.page) options.page = resolve(dirname(module_path), "webgpu_test.html");
         options.module = module_path.split(sep).at(-1);
         if (!options.test_name) options.test_name = options.module.replace(/\.(?:m?js)$/, "");
-        if (options.test_name === "test_command" || options.test_name === "test_squeezenet") {
+        if (options.test_name === "test_nikki_compute" || options.test_name === "test_command" || options.test_name === "test_squeezenet" || options.test_name === "nikki_ncnn_model_test") {
             options.require_webgpu = true;
         }
     }
@@ -225,7 +225,7 @@ async function main() {
 
         const payload = await page.evaluate(
             (timeout_ms) => Promise.race([
-                window.__ncnnWebGpuDone,
+                window.__nikkiWebGpuDone,
                 new Promise((_, reject) => setTimeout(() => reject(new Error("browser test timeout")), timeout_ms)),
             ]),
             test_timeout_ms,

@@ -1,7 +1,7 @@
 # Copyright 2026 nihui
 # SPDX-License-Identifier: Apache-2.0
 
-set(NIKKI_NCNN_BROWSER_DIR ${CMAKE_CURRENT_LIST_DIR})
+set(NIKKI_BROWSER_HARNESS_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../tests/browser")
 
 function(nikki_configure_ncnn_browser_tests)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
@@ -29,11 +29,11 @@ function(nikki_configure_ncnn_browser_tests)
     set(ncnn_webgpu_test_output_dir "${CMAKE_BINARY_DIR}/tests/webgpu")
     file(MAKE_DIRECTORY "${ncnn_webgpu_test_output_dir}")
     configure_file(
-        "${NIKKI_NCNN_BROWSER_DIR}/webgpu_test.html"
+        "${NIKKI_BROWSER_HARNESS_DIR}/webgpu_test.html"
         "${ncnn_webgpu_test_output_dir}/webgpu_test.html"
         COPYONLY)
     configure_file(
-        "${NIKKI_NCNN_BROWSER_DIR}/webgpu_test_worker.mjs"
+        "${NIKKI_BROWSER_HARNESS_DIR}/webgpu_test_worker.mjs"
         "${ncnn_webgpu_test_output_dir}/webgpu_test_worker.mjs"
         COPYONLY)
 
