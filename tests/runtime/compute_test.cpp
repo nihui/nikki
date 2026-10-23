@@ -545,6 +545,11 @@ int main()
         fprintf(stderr, "invalid maintenance3 properties\n");
         return 1;
     }
+    if (driver_properties.driverID != static_cast<VkDriverId>(33))
+    {
+        fprintf(stderr, "unexpected nikki driver ID: %u\n", (unsigned int)driver_properties.driverID);
+        return 1;
+    }
     if (!strstr(driver_properties.driverName, "experimental")
         || !strstr(driver_properties.driverName, "non-conformant")
         || !strstr(driver_properties.driverInfo, "experimental")
