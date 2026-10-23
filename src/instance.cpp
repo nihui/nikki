@@ -417,7 +417,8 @@ void impl_get_physical_device_properties2(VkPhysicalDevice physical_device, VkPh
         if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES)
         {
             VkPhysicalDeviceDriverProperties* driver = (VkPhysicalDeviceDriverProperties*)next;
-            driver->driverID = static_cast<VkDriverId>(0);
+            // VK_DRIVER_ID_NIKKI, added in Vulkan-Headers 1.4.366.
+            driver->driverID = static_cast<VkDriverId>(33);
             strncpy(driver->driverName, "nikki experimental non-conformant", VK_MAX_DRIVER_NAME_SIZE - 1);
             driver->driverName[VK_MAX_DRIVER_NAME_SIZE - 1] = '\0';
             const std::string driver_info = "nikki experimental non-conformant; WebGPU backend: "
