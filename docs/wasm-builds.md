@@ -6,7 +6,7 @@ library, or JavaScript SDK.
 
 ## Consume a prebuilt package
 
-Use emsdk **5.0.6** and extract `nikki-YYYYMMDD-wasm32-emscripten.tar.gz`.
+Use emsdk **6.0.12** and extract `nikki-YYYYMMDD-wasm32-emscripten.tar.gz`.
 The archive contains one directory with the same basename. Point CMake at
 that directory, not at a nikki source checkout:
 
@@ -50,24 +50,29 @@ only an intermediate archive and cannot satisfy this consumer contract.
 
 ## Build and package
 
-The dependency pins remain in the top-level `CMakeLists.txt`: emsdk 5.0.6,
+The dependency pins remain in the top-level `CMakeLists.txt`: emsdk 6.0.12,
 the Dawn/Tint commit, and the SHA-verified Emdawnwebgpu port. Initialize only
 the top-level Dawn submodule; recursive checkout traverses unrelated,
 sometimes inaccessible Chromium repositories.
+
+When upgrading Emscripten, use fresh build and staging directories and rebuild
+every object and static dependency. Do not reconfigure a 5.x build tree or reuse
+its archives under 6.0.12, even if the compiler path is unchanged: cross-version
+ABI compatibility is not guaranteed. The example below uses versioned directories.
 
 ```sh
 git submodule update --init third_party/dawn
 python3 tools/bootstrap_dawn.py
 VERSION=$(date -u +'%Y%m%d')
 export BINARYEN_CORES=1 # Bound link-time memory use, without changing optimization flags.
-emcmake cmake -S . -B build-wasm -G Ninja \
+emcmake cmake -S . -B build-wasm-6.0.12 -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib \
   -DNIKKI_RELEASE_VERSION="$VERSION" \
   -DNIKKI_BUILD_STATIC=ON -DNIKKI_BUILD_DRIVER=OFF \
   -DNIKKI_BUILD_TESTS=ON -DNIKKI_INSTALL=ON
-cmake --build build-wasm --target nikki nikki_amalgamate test_nikki_compute --parallel 2
-cmake --install build-wasm --prefix "$PWD/stage-wasm"
-python3 tools/package_wasm.py --stage stage-wasm --output release --version "$VERSION"
+cmake --build build-wasm-6.0.12 --target nikki nikki_amalgamate test_nikki_compute --parallel 2
+cmake --install build-wasm-6.0.12 --prefix "$PWD/stage-wasm-6.0.12"
+python3 tools/package_wasm.py --stage stage-wasm-6.0.12 --output release --version "$VERSION"
 ```
 
 `NIKKI_RELEASE_VERSION` defaults to the UTC configure date and is cached.
@@ -99,7 +104,7 @@ npm ci --prefix tests/browser
 NIKKI_WEBGPU_TEST_CHROME=/path/to/chrome \
 NIKKI_WEBGPU_TEST_ADAPTER=swiftshader \
   node tests/browser/run_webgpu_test.mjs \
-  build-wasm/tests/test_nikki_compute.js --require-webgpu
+  build-wasm-6.0.12/tests/test_nikki_compute.js --require-webgpu
 ```
 
 SwiftShader tests WebGPU execution without assuming physical GPU access.
