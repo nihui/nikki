@@ -1,0 +1,190 @@
+# Copyright 2026 nihui
+# SPDX-License-Identifier: Apache-2.0
+
+name: wasm
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified YYYYMMDD release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wasm-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+jobs:
+  build-wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      # Bound Binaryen memory use independently of the host CPU count.
+      BINARYEN_CORES: 1
+
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Select release version once
+        id: version
+        run: echo "value=$(date -u +'%Y%m%d')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          # Dawn dependencies are bootstrapped by tools/bootstrap_dawn.py.
+          # Recursive checkout reaches inaccessible Chromium internal submodules.
+          submodules: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Set up Emscripten
+        uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: '6.0.12'
+
+      - name: Bootstrap Dawn dependencies
+        run: python3 tools/bootstrap_dawn.py
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+          cache: npm
+          cache-dependency-path: tests/browser/package-lock.json
+
+      - name: Install browser runner dependencies
+        run: npm ci --prefix tests/browser
+
+      - name: Check release date and source manifest
+        run: |
+          python3 tests/cmake/version_test.py
+          python3 tests/cmake/manifest_test.py
+
+      - name: Configure
+        run: |
+          emcmake cmake -S . -B build-wasm -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DNIKKI_RELEASE_VERSION=${{ steps.version.outputs.value }} \
+            -DNIKKI_BUILD_STATIC=ON \
+            -DNIKKI_BUILD_DRIVER=OFF \
+            -DNIKKI_BUILD_TESTS=ON \
+            -DNIKKI_INSTALL=ON
+
+      # Linking the compute test also checks that the WebGPU port and the
+      # Tint/SPIRV-Tools dependencies resolve in a final browser WASM module.
+      - name: Build and link WASM
+        run: |
+          cmake --build build-wasm \
+            --target nikki nikki_amalgamate test_nikki_compute --parallel 2
+          test -s build-wasm/libnikki.a
+          test -s build-wasm/tests/test_nikki_compute.js
+          test -s build-wasm/tests/test_nikki_compute.wasm
+
+      - name: Install and package the complete SDK
+        run: |
+          cmake --install build-wasm --prefix "$PWD/stage-wasm"
+          python3 tools/package_wasm.py --stage stage-wasm --output release \
+            --version "${{ steps.version.outputs.value }}"
+
+      - name: Link a clean relocated consumer without the producer tree
+        shell: bash
+        run: |
+          consumer="$RUNNER_TEMP/nikki-installed-consumer"
+          mkdir -p "$consumer/package" "$consumer/source"
+          tar -xzf "release/nikki-${{ steps.version.outputs.value }}-wasm32-emscripten.tar.gz" \
+            -C "$consumer/package" --strip-components=1
+          cp tests/installed/CMakeLists.txt "$consumer/source/"
+          cp -r tests/runtime tests/shaders tests/browser "$consumer/source/"
+          # Ensure no source/build directory can accidentally satisfy link inputs.
+          cd "$RUNNER_TEMP"
+          mv "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE.hidden"
+          trap 'mv "$GITHUB_WORKSPACE.hidden" "$GITHUB_WORKSPACE"' EXIT
+          emcmake cmake -S "$consumer/source" -B "$consumer/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -Dnikki_DIR="$consumer/package/lib/cmake/nikki"
+          cmake --build "$consumer/build" --parallel 2
+          test -s "$consumer/build/test_nikki_compute.wasm"
+
+      - name: Run installed-package compute in Chromium WebGPU
+        timeout-minutes: 30
+        env:
+          NIKKI_WEBGPU_TEST_ADAPTER: swiftshader
+        run: |
+          CHROME="$(command -v google-chrome || command -v google-chrome-stable)"
+          NIKKI_WEBGPU_TEST_CHROME="$CHROME" \
+            node tests/browser/run_webgpu_test.mjs \
+            "$RUNNER_TEMP/nikki-installed-consumer/build/test_nikki_compute.js" --require-webgpu
+
+      - name: Package the browser smoke test
+        run: |
+          mkdir -p artifact/browser
+          cp "$RUNNER_TEMP/nikki-installed-consumer/build/"{test_nikki_compute.js,test_nikki_compute.wasm,webgpu_test.html,webgpu_test_worker.mjs} artifact/browser/
+          cp LICENSE.txt THIRD_PARTY_NOTICES.md artifact/browser/
+          python3 - <<'PYCODE'
+          import gzip
+          from pathlib import Path
+          root = Path("artifact/browser")
+          module = root / "test_nikki_compute.wasm"
+          if module.read_bytes()[:4] != b"\0asm":
+              raise SystemExit("Invalid WebAssembly magic")
+          report = ""
+          for name in ("test_nikki_compute.js", "test_nikki_compute.wasm"):
+              data = (root / name).read_bytes()
+              packed = gzip.compress(data, compresslevel=9, mtime=0)
+              report += f"{name}: {len(data):,} bytes, gzip {len(packed):,} bytes\n"
+          print(report)
+          (root / "build-sizes.txt").write_text(report)
+          PYCODE
+
+      - name: Upload consumable Emscripten SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nikki-${{ steps.version.outputs.value }}-wasm32-emscripten
+          path: release/*.tar.gz
+          if-no-files-found: error
+
+      - name: Upload browser WebGPU smoke test
+        uses: actions/upload-artifact@v4
+        with:
+          name: nikki-${{ steps.version.outputs.value }}-webgpu-smoke
+          path: artifact/browser/
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: build-wasm
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nikki-${{ needs.build-wasm.outputs.version }}-wasm32-emscripten
+          path: release
+      - name: Publish the verified date-version SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build-wasm.outputs.version }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          existing_tag=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$VERSION" \
+            --jq ".[] | select(.ref == \"refs/tags/$VERSION\") | .ref")
+          if [ -n "$existing_tag" ]; then
+            existing_commit=$(gh api "repos/$GH_REPO/commits/$VERSION" --jq .sha)
+            if [ "$existing_commit" != "$RELEASE_COMMIT" ]; then
+              echo "Release tag $VERSION already points to another commit" >&2
+              exit 1
+            fi
+          fi
+          gh release create "$VERSION" release/*.tar.gz \
+            --target "$RELEASE_COMMIT" --title "Release $VERSION" --generate-notes

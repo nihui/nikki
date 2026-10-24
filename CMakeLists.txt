@@ -4,6 +4,10 @@
 cmake_minimum_required(VERSION 3.22)
 
 set(NIKKI_VERSION 0.1.0)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/nikki_version.cmake")
+set(NIKKI_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/include/nikki/version.h.in"
+    "${NIKKI_GENERATED_INCLUDE_DIR}/nikki/version.h" @ONLY)
 set(NIKKI_STANDALONE OFF)
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     project(nikki
@@ -45,7 +49,7 @@ set(NIKKI_DAWN_COMMIT "0bc38adde72b79013536f8ce354b639ae19ae195")
 set(NIKKI_DAWN_DEPS_SHA256 "237449559ddc1888fd5ba62a9fcc0b21a53f21afa061c60ff8f077c6f7364075")
 set(NIKKI_EMDAWNWEBGPU_PORT_FILENAME "emdawnwebgpu-v20260720.160313.remoteport.py")
 set(NIKKI_EMDAWNWEBGPU_PORT_SHA256 "ec2b01bab7f853e36ada4620821b1821baee9bbfab16f1350ecbb22856b25a0d")
-set(NIKKI_EMSDK_VERSION "5.0.6")
+set(NIKKI_EMSDK_VERSION "6.0.12")
 set(NIKKI_ASYNCIFY_STACK_SIZE "65536")
 set(NIKKI_WASM_STACK_SIZE "1048576")
 
@@ -70,12 +74,13 @@ function(nikki_validate_environment)
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
         execute_process(
-            COMMAND ${CMAKE_CXX_COMPILER} --version
+            COMMAND ${CMAKE_CXX_COMPILER} -dumpversion
+            RESULT_VARIABLE NIKKI_EMCC_VERSION_RESULT
             OUTPUT_VARIABLE NIKKI_EMCC_VERSION_OUTPUT
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_QUIET)
-        string(FIND "${NIKKI_EMCC_VERSION_OUTPUT}" "${NIKKI_EMSDK_VERSION}" NIKKI_EMCC_VERSION_POS)
-        if(NIKKI_EMCC_VERSION_POS EQUAL -1)
+        if(NOT NIKKI_EMCC_VERSION_RESULT EQUAL 0 OR
+           NOT NIKKI_EMCC_VERSION_OUTPUT STREQUAL NIKKI_EMSDK_VERSION)
             message(FATAL_ERROR
                 "nikki requires emsdk ${NIKKI_EMSDK_VERSION}, but ${CMAKE_CXX_COMPILER} reports:\n${NIKKI_EMCC_VERSION_OUTPUT}")
         endif()
@@ -185,6 +190,7 @@ endfunction()
 
 function(nikki_configure_target target)
     target_compile_features(${target} PRIVATE cxx_std_20)
+    target_include_directories(${target} PRIVATE "${NIKKI_GENERATED_INCLUDE_DIR}")
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
         target_link_libraries(${target} PRIVATE emdawnwebgpu_c_include)
@@ -272,9 +278,11 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE}
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/amalgamate.py"
             --output "${NIKKI_AMALGAMATION_SOURCE}"
+            --version-header "${NIKKI_GENERATED_INCLUDE_DIR}/nikki/version.h"
         DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/amalgamate.py"
             "${NIKKI_SOURCE_MANIFEST}"
+            "${NIKKI_GENERATED_INCLUDE_DIR}/nikki/version.h"
             ${nikki_amalgamation_inputs}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Generating ${NIKKI_AMALGAMATION_SOURCE}"
@@ -341,6 +349,10 @@ if(NIKKI_INSTALL)
     include(GNUInstallDirs)
     include(CMakePackageConfigHelpers)
 
+    if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND TARGET nikki)
+        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/nikki_wasm_package.cmake")
+    endif()
+
     if(TARGET nikki_native)
         install(TARGETS nikki_native
             EXPORT nikkiTargets
@@ -353,8 +365,10 @@ if(NIKKI_INSTALL)
             DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/nikki")
     endif()
 
-    install(FILES "${NIKKI_AMALGAMATION_SOURCE}"
-        DESTINATION "${CMAKE_INSTALL_DATADIR}/nikki")
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+        install(FILES "${NIKKI_AMALGAMATION_SOURCE}"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/nikki")
+    endif()
     if(TARGET nikki_native)
         configure_package_config_file(
             "${CMAKE_CURRENT_SOURCE_DIR}/nikkiConfig.cmake.in"

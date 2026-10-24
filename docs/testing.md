@@ -20,14 +20,18 @@ ctest --test-dir build-native --output-on-failure
 
 Repeat with `NIKKI_BUILD_AMALGAMATION=ON` to compile the generated source.
 The generated file lives in the build tree and is not tracked by Git.
-Use `tools/amalgamate.py --check build/dist/nikki.cpp` to verify freshness;
+Use `tools/amalgamate.py --check build/dist/nikki.cpp --version-header build/include/nikki/version.h` to verify freshness;
 `--stdout` is available for release tooling without creating a source-tree
 artifact.
 
 The browser lane requires the pinned emsdk/Emdawnwebgpu versions from the
 top-level `CMakeLists.txt` and an actual browser WebGPU implementation. Configure
-with `emcmake`, build the test target, and run it through the project's browser
-harness. A native Dawn pass does not substitute for this lane.
+with `emcmake`, build `test_nikki_compute`, and run it in Chromium/SwiftShader
+through the shared `tests/browser/run_webgpu_test.mjs` harness. A native Dawn
+pass or successful wasm link does not substitute for this lane. The shared
+harness is also used by the optional ncnn browser integration.
+
+See [wasm-builds.md](wasm-builds.md) for the CI artifacts and browser test recipe.
 
 ncnn integration tests are opt-in through `integrations/ncnn`; Native driver
 and browser harness details live there rather than in ncnn. They are not part

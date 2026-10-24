@@ -7,18 +7,18 @@ let result_sent = false;
 function send_result(payload) {
     if (result_sent) throw new Error("attempted to send more than one WebGPU result");
     result_sent = true;
-    self.postMessage({ type: "ncnn-webgpu-result", payload });
+    self.postMessage({ type: "nikki-webgpu-result", payload });
 }
 
 function send_log(stream, message) {
-    self.postMessage({ type: "ncnn-webgpu-log", stream, message });
+    self.postMessage({ type: "nikki-webgpu-log", stream, message });
 }
 
 self.addEventListener("message", async (event) => {
-    if (event.data.type !== "ncnn-webgpu-run") return;
+    if (event.data.type !== "nikki-webgpu-run") return;
 
     if (wasm_call_pending) {
-        self.postMessage({ type: "ncnn-webgpu-rejected", name: event.data.name });
+        self.postMessage({ type: "nikki-webgpu-rejected", name: event.data.name });
         return;
     }
 
@@ -33,7 +33,7 @@ self.addEventListener("message", async (event) => {
 
     try {
         if (typeof WorkerGlobalScope === "undefined" || !(self instanceof WorkerGlobalScope)) {
-            throw new Error("ncnn WebGPU tests must run in a Dedicated Worker");
+            throw new Error("nikki WebGPU tests must run in a Dedicated Worker");
         }
         if (!navigator.gpu) throw new Error("navigator.gpu is unavailable");
 
