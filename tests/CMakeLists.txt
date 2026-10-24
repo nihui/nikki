@@ -13,6 +13,13 @@ set(nikki_test_targets
     test_nikki_non_conformant_warning)
 
 if(TARGET nikki)
+    add_executable(test_nikki_integer_ranges
+        translator/integer_ranges_test.cpp)
+    nikki_configure_target(test_nikki_integer_ranges)
+    target_link_libraries(test_nikki_integer_ranges PRIVATE nikki::static)
+    set_property(TARGET test_nikki_integer_ranges
+        PROPERTY FOLDER "nikki/tests")
+
     add_executable(test_nikki_cooperative_matrix_translation
         translator/cooperative_matrix_test.cpp)
     nikki_configure_target(test_nikki_cooperative_matrix_translation)
@@ -71,6 +78,11 @@ else()
             -DTEST_EXECUTABLE=$<TARGET_FILE:test_nikki_non_conformant_warning>
             -DPROJECT_NAME=nikki
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/non_conformant_warning_test.cmake")
+    if(TARGET test_nikki_integer_ranges)
+        add_test(NAME test_nikki_integer_ranges COMMAND test_nikki_integer_ranges)
+        set_tests_properties(test_nikki_integer_ranges PROPERTIES
+            LABELS "nikki;translator;integer-ranges")
+    endif()
     if(TARGET test_nikki_cooperative_matrix_translation)
         add_test(NAME test_nikki_cooperative_matrix_translation
             COMMAND test_nikki_cooperative_matrix_translation)

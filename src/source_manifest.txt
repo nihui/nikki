@@ -22,6 +22,7 @@ driver src/backend/device.cpp
 driver src/instance.cpp
 driver src/device.cpp
 driver src/memory.cpp
+translator src/translator/spirv_integer_ranges.cpp
 translator src/translator/spirv_prepare.cpp
 translator src/translator/storage16.cpp
 translator src/translator/immediate.cpp

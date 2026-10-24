@@ -7,6 +7,9 @@
 #include "translator_internal.h"
 
 #include "spirv-tools/optimizer.hpp"
+#ifndef SPV_ENABLE_UTILITY_CODE
+#define SPV_ENABLE_UTILITY_CODE
+#endif
 #include "spirv/unified1/spirv.hpp11"
 #include "src/tint/api/common/binding_point.h"
 #include "src/tint/api/tint.h"
@@ -97,6 +100,7 @@ struct SubgroupBuiltinSubstitution
 inline std::once_flag g_tint_initialize_once;
 
 int normalize_spirv(std::vector<uint32_t>& spirv);
+void simplify_bounded_integer_loops(std::vector<uint32_t>& spirv);
 int specialize_spirv(std::vector<uint32_t>& spirv, const VkSpecializationInfo* info);
 int legalize_non_finite_fp16_constants(std::vector<uint32_t>& spirv);
 int legalize_storage_buffer_16bit_integer_spirv(std::vector<uint32_t>& spirv);
