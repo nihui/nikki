@@ -1,0 +1,79 @@
+# Copyright 2026 nihui
+# SPDX-License-Identifier: Apache-2.0
+
+name: wasm
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wasm-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Set up Emscripten
+        uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: '5.0.6'
+
+      - name: Bootstrap Dawn dependencies
+        run: python3 tools/bootstrap_dawn.py
+
+      - name: Configure
+        run: |
+          emcmake cmake -S . -B build-wasm -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNIKKI_BUILD_STATIC=ON \
+            -DNIKKI_BUILD_DRIVER=OFF \
+            -DNIKKI_BUILD_TESTS=ON \
+            -DNIKKI_INSTALL=OFF
+
+      # Linking the compute test also checks that the WebGPU port and the
+      # Tint/SPIRV-Tools dependencies resolve in a final browser WASM module.
+      - name: Build and link WASM
+        run: |
+          cmake --build build-wasm \
+            --target nikki test_nikki_compute --parallel 2
+          test -s build-wasm/libnikki.a
+          test -s build-wasm/tests/test_nikki_compute.js
+          test -s build-wasm/tests/test_nikki_compute.wasm
+
+      - name: Package build artifacts
+        run: |
+          mkdir -p artifact
+          cp build-wasm/libnikki.a artifact/
+          cp build-wasm/tests/test_nikki_compute.js artifact/
+          cp build-wasm/tests/test_nikki_compute.wasm artifact/
+          emcc --version > artifact/emsdk-version.txt
+          cat > artifact/README.txt <<'EOF'
+          libnikki.a is an Emscripten static archive for linking into a WASM
+          application (such as ncnn); it is not a standalone browser module.
+          Consumers must link the matching Dawn/Tint/SPIRV-Tools dependencies
+          and the Emdawnwebgpu port at the final application link step.
+
+          test_nikki_compute.js and test_nikki_compute.wasm are a linked test
+          executable for build verification, not a reusable nikki JS API.
+          EOF
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nikki-wasm
+          path: artifact/
+          if-no-files-found: error
