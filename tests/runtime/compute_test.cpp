@@ -270,8 +270,7 @@ int main()
         fprintf(stderr, "unexpected physical device version %u\n", physical_device_properties.apiVersion);
         return 1;
     }
-    if (physical_device_properties.driverVersion != VK_MAKE_VERSION(
-            NIKKI_DRIVER_VERSION_MAJOR, NIKKI_DRIVER_VERSION_MINOR, NIKKI_DRIVER_VERSION_PATCH))
+    if (physical_device_properties.driverVersion != VK_MAKE_VERSION(NIKKI_DRIVER_VERSION_MAJOR, NIKKI_DRIVER_VERSION_MINOR, NIKKI_DRIVER_VERSION_PATCH))
     {
         fprintf(stderr, "unexpected nikki driver version %u for release %s\n",
                 physical_device_properties.driverVersion, NIKKI_RELEASE_VERSION_STRING);

@@ -62,7 +62,7 @@ function(nikki_validate_environment)
     if(NOT EXISTS "${NIKKI_DAWN_SOURCE_DIR}/CMakeLists.txt")
         message(FATAL_ERROR
             "The Dawn source tree is missing at ${NIKKI_DAWN_SOURCE_DIR}. "
-            "Run git submodule update --init --recursive and tools/bootstrap_dawn.py from the nikki project root, "
+            "Run git submodule update --init third_party/dawn and python3 tools/bootstrap_dawn.py from the nikki project root, "
             "or set NIKKI_DAWN_SOURCE_DIR explicitly.")
     endif()
     if(NOT EXISTS "${NIKKI_DAWN_SOURCE_DIR}/out/.nikki-deps-stamp")

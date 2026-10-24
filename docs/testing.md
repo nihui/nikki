@@ -3,8 +3,8 @@
 Native validation covers API profile, buffer/memory, descriptor/pipeline,
 command/queue/fence, shader capabilities, query/timestamp behavior, async
 submission, fence-less cleanup and readback lifetime. Structural tests also
-validate malformed source manifests, deterministic amalgamation, ABI guard
-exception mapping, translator-header independence, and the four-symbol shared
+validate release dates, malformed source manifests, deterministic amalgamation,
+ABI guard exception mapping, translator-header independence, and the four-symbol shared
 driver export boundary. Capability-dependent
 fp16, subgroup, integer-dot and cooperative-matrix paths skip when Dawn does
 not expose the required feature. The default test build also compiles every
@@ -45,6 +45,8 @@ cmake -S tests/cmake/package_consumer -B build-package-consumer \
   -DCMAKE_PREFIX_PATH=/tmp/nikki-install
 ```
 
-The installed package uses an exported `nikki::driver` target. It does not
+The installed native package uses an exported `nikki::driver` target. It does not
 construct an imported library with `find_library()` and does not export the
 static target or its private Dawn/Tint/SPIRV-Tools dependencies.
+The [WASM SDK](wasm-builds.md) instead exports `nikki::static` with its complete
+static link dependencies and is tested with a relocated consumer build.

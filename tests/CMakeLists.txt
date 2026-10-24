@@ -105,6 +105,13 @@ else()
         LABELS "nikki;api;conformance")
 
     if(Python3_Interpreter_FOUND)
+        add_test(NAME test_nikki_version
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_test.py"
+                --cmake "${CMAKE_COMMAND}")
+        set_tests_properties(test_nikki_version PROPERTIES
+            LABELS "nikki;structure;version")
+
         add_test(NAME test_nikki_source_manifest
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/manifest_test.py")
