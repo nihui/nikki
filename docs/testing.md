@@ -26,8 +26,12 @@ artifact.
 
 The browser lane requires the pinned emsdk/Emdawnwebgpu versions from the
 top-level `CMakeLists.txt` and an actual browser WebGPU implementation. Configure
-with `emcmake`, build the test target, and run it through the project's browser
-harness. A native Dawn pass does not substitute for this lane.
+with `emcmake`, build `test_nikki_compute`, and run it in Chromium/SwiftShader
+through the shared `tests/browser/run_webgpu_test.mjs` harness. A native Dawn
+pass or successful wasm link does not substitute for this lane. The shared
+harness is also used by the optional ncnn browser integration.
+
+See [wasm-builds.md](wasm-builds.md) for the CI artifacts and browser test recipe.
 
 ncnn integration tests are opt-in through `integrations/ncnn`; Native driver
 and browser harness details live there rather than in ncnn. They are not part

@@ -6,7 +6,7 @@
 <head>
     <meta charset="utf-8">
     <link rel="icon" href="data:,">
-    <title>ncnn WebGPU test</title>
+    <title>nikki WebGPU test</title>
 </head>
 <body>
 <script type="module">
@@ -16,16 +16,16 @@ const module_url = parameters.get("module");
 const worker = new Worker("./webgpu_test_worker.mjs", { type: "module" });
 
 let result_count = 0;
-window.__ncnnWebGpuDone = new Promise((resolve, reject) => {
+window.__nikkiWebGpuDone = new Promise((resolve, reject) => {
     worker.addEventListener("error", (event) => reject(event.error || new Error(event.message)));
     worker.addEventListener("messageerror", () => reject(new Error("Worker message deserialization failed")));
     worker.addEventListener("message", (event) => {
-        if (event.data.type === "ncnn-webgpu-log") {
+        if (event.data.type === "nikki-webgpu-log") {
             const method = event.data.stream === "stderr" ? "error" : "log";
             console[method](event.data.message);
             return;
         }
-        if (event.data.type !== "ncnn-webgpu-result") return;
+        if (event.data.type !== "nikki-webgpu-result") return;
         result_count++;
         if (result_count !== 1) {
             reject(new Error("Worker sent more than one WebGPU result"));
@@ -36,7 +36,7 @@ window.__ncnnWebGpuDone = new Promise((resolve, reject) => {
 });
 
 worker.postMessage({
-    type: "ncnn-webgpu-run",
+    type: "nikki-webgpu-run",
     name,
     module_url,
 });

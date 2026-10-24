@@ -37,6 +37,16 @@ jobs:
       - name: Bootstrap Dawn dependencies
         run: python3 tools/bootstrap_dawn.py
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+          cache: npm
+          cache-dependency-path: tests/browser/package-lock.json
+
+      - name: Install browser runner dependencies
+        run: npm ci --prefix tests/browser
+
       - name: Configure
         run: |
           emcmake cmake -S . -B build-wasm -G Ninja \
@@ -56,26 +66,86 @@ jobs:
           test -s build-wasm/tests/test_nikki_compute.js
           test -s build-wasm/tests/test_nikki_compute.wasm
 
-      - name: Package build artifacts
+      - name: Run compute in Chromium WebGPU
+        timeout-minutes: 30
+        env:
+          NIKKI_WEBGPU_TEST_ADAPTER: swiftshader
         run: |
-          mkdir -p artifact
-          cp build-wasm/libnikki.a artifact/
-          cp build-wasm/tests/test_nikki_compute.js artifact/
-          cp build-wasm/tests/test_nikki_compute.wasm artifact/
-          emcc --version > artifact/emsdk-version.txt
-          cat > artifact/README.txt <<'EOF'
-          libnikki.a is an Emscripten static archive for linking into a WASM
-          application (such as ncnn); it is not a standalone browser module.
-          Consumers must link the matching Dawn/Tint/SPIRV-Tools dependencies
-          and the Emdawnwebgpu port at the final application link step.
+          CHROME="$(command -v google-chrome || command -v google-chrome-stable)"
+          NIKKI_WEBGPU_TEST_CHROME="$CHROME" \
+            node tests/browser/run_webgpu_test.mjs \
+            build-wasm/tests/test_nikki_compute.js --require-webgpu
 
-          test_nikki_compute.js and test_nikki_compute.wasm are a linked test
-          executable for build verification, not a reusable nikki JS API.
+      - name: Package and verify artifacts
+        run: |
+          mkdir -p artifact/static artifact/browser
+          cp build-wasm/libnikki.a artifact/static/
+          cp build-wasm/tests/test_nikki_compute.js artifact/browser/
+          cp build-wasm/tests/test_nikki_compute.wasm artifact/browser/
+          cp build-wasm/tests/webgpu_test.html artifact/browser/
+          cp build-wasm/tests/webgpu_test_worker.mjs artifact/browser/
+          emcc --version > artifact/static/emsdk-version.txt
+          git rev-parse HEAD > artifact/static/source-revision.txt
+          git -C third_party/dawn rev-parse HEAD > artifact/static/dawn-revision.txt
+          cp LICENSE.txt THIRD_PARTY_NOTICES.md artifact/static/
+          cp LICENSE.txt THIRD_PARTY_NOTICES.md artifact/browser/
+          cat > artifact/static/README.txt <<'EOF'
+          libnikki.a is an Emscripten static archive, not a browser module
+          or a self-contained SDK. Link matching Tint/SPIRV-Tools objects
+          and the pinned Emdawnwebgpu port in the final application.
+          Prefer CMake's nikki::static target for in-tree consumers.
           EOF
+          cat > artifact/browser/README.txt <<'EOF'
+          This is a browser smoke-test executable, not a JavaScript SDK.
+          Serve these files over HTTP (not file://) in a WebGPU browser.
+          See docs/wasm-builds.md for the Puppeteer test invocation.
+          EOF
+          python3 - <<'PY'
+          import gzip
+          from pathlib import Path
 
-      - name: Upload WASM artifacts
+          root = Path("artifact")
+          expected = {
+              "static": {"libnikki.a", "emsdk-version.txt",
+                         "source-revision.txt", "dawn-revision.txt",
+                         "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "README.txt"},
+              "browser": {"test_nikki_compute.js",
+                          "test_nikki_compute.wasm", "webgpu_test.html",
+                          "webgpu_test_worker.mjs", "LICENSE.txt",
+                          "THIRD_PARTY_NOTICES.md", "README.txt"},
+          }
+          for folder, names in expected.items():
+              actual = {item.name for item in (root / folder).iterdir()}
+              if actual != names:
+                  raise SystemExit(f"Unexpected {folder} artifacts: {actual ^ names}")
+
+          archive = root / "static/libnikki.a"
+          module = root / "browser/test_nikki_compute.wasm"
+          if archive.read_bytes()[:8] != b"!<arch>\\n":
+              raise SystemExit("Invalid static archive magic")
+          if module.read_bytes()[:4] != b"\\0asm":
+              raise SystemExit("Invalid WebAssembly magic")
+          output = []
+          for path in (archive, root / "browser/test_nikki_compute.js", module):
+              data = path.read_bytes()
+              packed = gzip.compress(data, compresslevel=9, mtime=0)
+              output.append(f"{path.name}: {len(data):,} bytes, "
+                            f"gzip {len(packed):,} bytes")
+          report = "\\n".join(output) + "\\n"
+          print(report)
+          (root / "browser/build-sizes.txt").write_text(report)
+          PY
+
+      - name: Upload Emscripten static archive
         uses: actions/upload-artifact@v4
         with:
-          name: nikki-wasm
-          path: artifact/
+          name: nikki-emscripten-static
+          path: artifact/static/
+          if-no-files-found: error
+
+      - name: Upload browser WebGPU smoke test
+        uses: actions/upload-artifact@v4
+        with:
+          name: nikki-webgpu-smoke
+          path: artifact/browser/
           if-no-files-found: error
