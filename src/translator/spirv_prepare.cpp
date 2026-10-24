@@ -138,6 +138,7 @@ int specialize_spirv(std::vector<uint32_t>& spirv, const VkSpecializationInfo* i
         return -1;
     }
 
+    simplify_bounded_integer_loops(specialized);
     spirv.swap(specialized);
     return 0;
 }
