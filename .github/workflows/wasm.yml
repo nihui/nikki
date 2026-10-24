@@ -121,9 +121,9 @@ jobs:
 
           archive = root / "static/libnikki.a"
           module = root / "browser/test_nikki_compute.wasm"
-          if archive.read_bytes()[:8] != b"!<arch>\\n":
+          if archive.read_bytes()[:8] != b"!<arch>\n":
               raise SystemExit("Invalid static archive magic")
-          if module.read_bytes()[:4] != b"\\0asm":
+          if module.read_bytes()[:4] != b"\0asm":
               raise SystemExit("Invalid WebAssembly magic")
           output = []
           for path in (archive, root / "browser/test_nikki_compute.js", module):
@@ -131,7 +131,7 @@ jobs:
               packed = gzip.compress(data, compresslevel=9, mtime=0)
               output.append(f"{path.name}: {len(data):,} bytes, "
                             f"gzip {len(packed):,} bytes")
-          report = "\\n".join(output) + "\\n"
+          report = "\n".join(output) + "\n"
           print(report)
           (root / "browser/build-sizes.txt").write_text(report)
           PY
