@@ -24,6 +24,9 @@ jobs:
   build-wasm:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    env:
+      # Bound Binaryen memory use independently of the host CPU count.
+      BINARYEN_CORES: 1
 
     outputs:
       version: ${{ steps.version.outputs.value }}
@@ -107,7 +110,7 @@ jobs:
           mv "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE.hidden"
           trap 'mv "$GITHUB_WORKSPACE.hidden" "$GITHUB_WORKSPACE"' EXIT
           emcmake cmake -S "$consumer/source" -B "$consumer/build" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$consumer/package"
+            -DCMAKE_BUILD_TYPE=Release -Dnikki_DIR="$consumer/package/lib/cmake/nikki"
           cmake --build "$consumer/build" --parallel 2
           test -s "$consumer/build/test_nikki_compute.wasm"
 

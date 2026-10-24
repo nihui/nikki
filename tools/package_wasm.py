@@ -60,7 +60,7 @@ def main():
     (stage / "README.txt").write_text(
         "Prebuilt wasm32 Emscripten SDK, not a JavaScript module.\n"
         "With emsdk 5.0.6 use find_package(nikki CONFIG REQUIRED), then link nikki::static.\n"
-        "Set CMAKE_PREFIX_PATH to this directory. Tint/SPIRV-Tools and Vulkan headers are included.\n"
+        "Set nikki_DIR to this directory/lib/cmake/nikki. Tint/SPIRV-Tools and Vulkan headers are included.\n"
         "The pinned Emdawnwebgpu port downloads its runtime on first use; no Dawn source is needed.\n"
         "Browser module exports and application flags remain the consumer's responsibility.\n")
     name = f"nikki-{args.version}-wasm32-emscripten"

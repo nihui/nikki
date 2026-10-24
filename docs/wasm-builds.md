@@ -13,7 +13,7 @@ that directory, not at a nikki source checkout:
 ```sh
 emcmake cmake -S my-app -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=/path/to/nikki-YYYYMMDD-wasm32-emscripten
+  -Dnikki_DIR=/path/to/nikki-YYYYMMDD-wasm32-emscripten/lib/cmake/nikki
 cmake --build build
 ```
 
@@ -21,6 +21,9 @@ cmake --build build
 find_package(nikki CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE nikki::static)
 ```
+
+Use the explicit `nikki_DIR`: Emscripten searches packages only under its
+sysroot by default, so `CMAKE_PREFIX_PATH` alone is not sufficient.
 
 The package includes `lib/libnikki.a`, the complete reachable static link
 closure (Tint, SPIRV-Tools, Dawn utilities and Abseil), Vulkan headers,
@@ -56,6 +59,7 @@ sometimes inaccessible Chromium repositories.
 git submodule update --init third_party/dawn
 python3 tools/bootstrap_dawn.py
 VERSION=$(date -u +'%Y%m%d')
+export BINARYEN_CORES=1 # Bound link-time memory use, without changing optimization flags.
 emcmake cmake -S . -B build-wasm -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib \
   -DNIKKI_RELEASE_VERSION="$VERSION" \
