@@ -1,0 +1,60 @@
+// Copyright 2026 nihui
+// SPDX-License-Identifier: Apache-2.0
+
+#version 450
+
+// Adapted from momoten's buffer_read_write.comp. Only one storage reference
+// is read and written; the output binding is backed by disjoint memory.
+layout(local_size_x = 1) in;
+#ifdef USE_VEC2
+layout(binding = 0) buffer Data { vec2 values[]; } data;
+#else
+layout(binding = 0) buffer Data { float values[]; } data;
+#endif
+layout(binding = 1) writeonly buffer Output { float values[]; } output_data;
+layout(push_constant) uniform Parameters { uint read_index; uint write_index; } pc;
+
+void main()
+{
+#ifdef USE_VEC2
+    uint r = pc.read_index * 2;
+    uint w = pc.write_index * 2;
+    vec2 a = data.values[r];
+    vec2 b = data.values[r + 1];
+    data.values[w] = vec2(1.0, 2.0);
+    data.values[w + 1] = vec2(3.0, 4.0);
+    vec2 c = data.values[r];
+    vec2 d = data.values[r + 1];
+    output_data.values[0] = a.x;
+    output_data.values[1] = a.y;
+    output_data.values[2] = b.x;
+    output_data.values[3] = b.y;
+    output_data.values[4] = c.x;
+    output_data.values[5] = c.y;
+    output_data.values[6] = d.x;
+    output_data.values[7] = d.y;
+#else
+    uint r = pc.read_index * 4;
+    uint w = pc.write_index * 4;
+    float a = data.values[r];
+    float b = data.values[r + 1];
+    float c = data.values[r + 2];
+    float d = data.values[r + 3];
+    data.values[w] = 1.0;
+    data.values[w + 1] = 2.0;
+    data.values[w + 2] = 3.0;
+    data.values[w + 3] = 4.0;
+    float e = data.values[r];
+    float f = data.values[r + 1];
+    float g = data.values[r + 2];
+    float h = data.values[r + 3];
+    output_data.values[0] = a;
+    output_data.values[1] = b;
+    output_data.values[2] = c;
+    output_data.values[3] = d;
+    output_data.values[4] = e;
+    output_data.values[5] = f;
+    output_data.values[6] = g;
+    output_data.values[7] = h;
+#endif
+}

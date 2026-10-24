@@ -10,6 +10,16 @@ fp16, subgroup, integer-dot and cooperative-matrix paths skip when Dawn does
 not expose the required feature. The default test build also compiles every
 Vulkan frontend module with `VK_USE_64_BIT_PTR_DEFINES=0`.
 
+The compute test also checks scalar and `vec2` read/write/read sequences with
+matching and disjoint dynamic indices, untouched guard values, and adjacent
+loads ending at an odd-sized buffer's final float. Aliased `VkBuffer` handles
+are tested across dispatches separated by a shader-write to shader-read memory
+barrier. These cases adapt momoten's `buffer_read_write.comp` and
+`coalesced_buffer_load.comp`; they do not assume a write through one descriptor
+is visible through another descriptor in the same invocation. The fixtures use
+the legacy SPIR-V `GLSL450` memory model, not `VulkanKHR`, and have no coherent
+decorations or shader memory barriers. No runtime alias policy is changed.
+
 ```bash
 cmake -S . -B build-native \
   -DNIKKI_BUILD_DRIVER=ON \
