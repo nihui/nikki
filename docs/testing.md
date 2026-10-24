@@ -20,7 +20,7 @@ ctest --test-dir build-native --output-on-failure
 
 Repeat with `NIKKI_BUILD_AMALGAMATION=ON` to compile the generated source.
 The generated file lives in the build tree and is not tracked by Git.
-Use `tools/amalgamate.py --check build/dist/nikki.cpp` to verify freshness;
+Use `tools/amalgamate.py --check build/dist/nikki.cpp --version-header build/include/nikki/version.h` to verify freshness;
 `--stdout` is available for release tooling without creating a source-tree
 artifact.
 

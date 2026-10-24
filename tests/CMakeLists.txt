@@ -41,7 +41,8 @@ nikki_configure_target(nikki_translator_header_compile)
 
 foreach(nikki_test_target IN LISTS nikki_test_targets)
     target_include_directories(${nikki_test_target} PRIVATE
-        "${NIKKI_DAWN_SOURCE_DIR}/third_party/vulkan-headers/src/include")
+        "${NIKKI_DAWN_SOURCE_DIR}/third_party/vulkan-headers/src/include"
+        "${NIKKI_GENERATED_INCLUDE_DIR}")
 endforeach()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
@@ -114,7 +115,8 @@ else()
             add_test(NAME test_nikki_amalgamation_fresh
                 COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/amalgamate.py"
-                    --check "${NIKKI_AMALGAMATION_SOURCE}")
+                    --check "${NIKKI_AMALGAMATION_SOURCE}"
+                    --version-header "${NIKKI_GENERATED_INCLUDE_DIR}/nikki/version.h")
             set_tests_properties(test_nikki_amalgamation_fresh PROPERTIES
                 LABELS "nikki;structure;amalgamation")
         endif()

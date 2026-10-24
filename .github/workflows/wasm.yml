@@ -3,21 +3,35 @@
 
 name: wasm
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified YYYYMMDD release
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
   group: wasm-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   build-wasm:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
+      - name: Select release version once
+        id: version
+        run: echo "value=$(date -u +'%Y%m%d')" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
         with:
           # Dawn dependencies are bootstrapped by tools/bootstrap_dawn.py.
@@ -47,26 +61,57 @@ jobs:
       - name: Install browser runner dependencies
         run: npm ci --prefix tests/browser
 
+      - name: Check release date and source manifest
+        run: |
+          python3 tests/cmake/version_test.py
+          python3 tests/cmake/manifest_test.py
+
       - name: Configure
         run: |
           emcmake cmake -S . -B build-wasm -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DNIKKI_RELEASE_VERSION=${{ steps.version.outputs.value }} \
             -DNIKKI_BUILD_STATIC=ON \
             -DNIKKI_BUILD_DRIVER=OFF \
             -DNIKKI_BUILD_TESTS=ON \
-            -DNIKKI_INSTALL=OFF
+            -DNIKKI_INSTALL=ON
 
       # Linking the compute test also checks that the WebGPU port and the
       # Tint/SPIRV-Tools dependencies resolve in a final browser WASM module.
       - name: Build and link WASM
         run: |
           cmake --build build-wasm \
-            --target nikki test_nikki_compute --parallel 2
+            --target nikki nikki_amalgamate test_nikki_compute --parallel 2
           test -s build-wasm/libnikki.a
           test -s build-wasm/tests/test_nikki_compute.js
           test -s build-wasm/tests/test_nikki_compute.wasm
 
-      - name: Run compute in Chromium WebGPU
+      - name: Install and package the complete SDK
+        run: |
+          cmake --install build-wasm --prefix "$PWD/stage-wasm"
+          python3 tools/package_wasm.py --stage stage-wasm --output release \
+            --version "${{ steps.version.outputs.value }}"
+
+      - name: Link a clean relocated consumer without the producer tree
+        shell: bash
+        run: |
+          consumer="$RUNNER_TEMP/nikki-installed-consumer"
+          mkdir -p "$consumer/package" "$consumer/source"
+          tar -xzf "release/nikki-${{ steps.version.outputs.value }}-wasm32-emscripten.tar.gz" \
+            -C "$consumer/package" --strip-components=1
+          cp tests/installed/CMakeLists.txt "$consumer/source/"
+          cp -r tests/runtime tests/shaders tests/browser "$consumer/source/"
+          # Ensure no source/build directory can accidentally satisfy link inputs.
+          cd "$RUNNER_TEMP"
+          mv "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE.hidden"
+          trap 'mv "$GITHUB_WORKSPACE.hidden" "$GITHUB_WORKSPACE"' EXIT
+          emcmake cmake -S "$consumer/source" -B "$consumer/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$consumer/package"
+          cmake --build "$consumer/build" --parallel 2
+          test -s "$consumer/build/test_nikki_compute.wasm"
+
+      - name: Run installed-package compute in Chromium WebGPU
         timeout-minutes: 30
         env:
           NIKKI_WEBGPU_TEST_ADAPTER: swiftshader
@@ -74,78 +119,69 @@ jobs:
           CHROME="$(command -v google-chrome || command -v google-chrome-stable)"
           NIKKI_WEBGPU_TEST_CHROME="$CHROME" \
             node tests/browser/run_webgpu_test.mjs \
-            build-wasm/tests/test_nikki_compute.js --require-webgpu
+            "$RUNNER_TEMP/nikki-installed-consumer/build/test_nikki_compute.js" --require-webgpu
 
-      - name: Package and verify artifacts
+      - name: Package the browser smoke test
         run: |
-          mkdir -p artifact/static artifact/browser
-          cp build-wasm/libnikki.a artifact/static/
-          cp build-wasm/tests/test_nikki_compute.js artifact/browser/
-          cp build-wasm/tests/test_nikki_compute.wasm artifact/browser/
-          cp build-wasm/tests/webgpu_test.html artifact/browser/
-          cp build-wasm/tests/webgpu_test_worker.mjs artifact/browser/
-          emcc --version > artifact/static/emsdk-version.txt
-          git rev-parse HEAD > artifact/static/source-revision.txt
-          git -C third_party/dawn rev-parse HEAD > artifact/static/dawn-revision.txt
-          cp LICENSE.txt THIRD_PARTY_NOTICES.md artifact/static/
+          mkdir -p artifact/browser
+          cp "$RUNNER_TEMP/nikki-installed-consumer/build/"{test_nikki_compute.js,test_nikki_compute.wasm,webgpu_test.html,webgpu_test_worker.mjs} artifact/browser/
           cp LICENSE.txt THIRD_PARTY_NOTICES.md artifact/browser/
-          cat > artifact/static/README.txt <<'EOF'
-          libnikki.a is an Emscripten static archive, not a browser module
-          or a self-contained SDK. Link matching Tint/SPIRV-Tools objects
-          and the pinned Emdawnwebgpu port in the final application.
-          Prefer CMake's nikki::static target for in-tree consumers.
-          EOF
-          cat > artifact/browser/README.txt <<'EOF'
-          This is a browser smoke-test executable, not a JavaScript SDK.
-          Serve these files over HTTP (not file://) in a WebGPU browser.
-          See docs/wasm-builds.md for the Puppeteer test invocation.
-          EOF
-          python3 - <<'PY'
+          python3 - <<'PYCODE'
           import gzip
           from pathlib import Path
-
-          root = Path("artifact")
-          expected = {
-              "static": {"libnikki.a", "emsdk-version.txt",
-                         "source-revision.txt", "dawn-revision.txt",
-                         "LICENSE.txt", "THIRD_PARTY_NOTICES.md", "README.txt"},
-              "browser": {"test_nikki_compute.js",
-                          "test_nikki_compute.wasm", "webgpu_test.html",
-                          "webgpu_test_worker.mjs", "LICENSE.txt",
-                          "THIRD_PARTY_NOTICES.md", "README.txt"},
-          }
-          for folder, names in expected.items():
-              actual = {item.name for item in (root / folder).iterdir()}
-              if actual != names:
-                  raise SystemExit(f"Unexpected {folder} artifacts: {actual ^ names}")
-
-          archive = root / "static/libnikki.a"
-          module = root / "browser/test_nikki_compute.wasm"
-          if archive.read_bytes()[:8] != b"!<arch>\n":
-              raise SystemExit("Invalid static archive magic")
+          root = Path("artifact/browser")
+          module = root / "test_nikki_compute.wasm"
           if module.read_bytes()[:4] != b"\0asm":
               raise SystemExit("Invalid WebAssembly magic")
-          output = []
-          for path in (archive, root / "browser/test_nikki_compute.js", module):
-              data = path.read_bytes()
+          report = ""
+          for name in ("test_nikki_compute.js", "test_nikki_compute.wasm"):
+              data = (root / name).read_bytes()
               packed = gzip.compress(data, compresslevel=9, mtime=0)
-              output.append(f"{path.name}: {len(data):,} bytes, "
-                            f"gzip {len(packed):,} bytes")
-          report = "\n".join(output) + "\n"
+              report += f"{name}: {len(data):,} bytes, gzip {len(packed):,} bytes\n"
           print(report)
-          (root / "browser/build-sizes.txt").write_text(report)
-          PY
+          (root / "build-sizes.txt").write_text(report)
+          PYCODE
 
-      - name: Upload Emscripten static archive
+      - name: Upload consumable Emscripten SDK
         uses: actions/upload-artifact@v4
         with:
-          name: nikki-emscripten-static
-          path: artifact/static/
+          name: nikki-${{ steps.version.outputs.value }}-wasm32-emscripten
+          path: release/*.tar.gz
           if-no-files-found: error
 
       - name: Upload browser WebGPU smoke test
         uses: actions/upload-artifact@v4
         with:
-          name: nikki-webgpu-smoke
+          name: nikki-${{ steps.version.outputs.value }}-webgpu-smoke
           path: artifact/browser/
           if-no-files-found: error
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: build-wasm
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nikki-${{ needs.build-wasm.outputs.version }}-wasm32-emscripten
+          path: release
+      - name: Publish the verified date-version SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build-wasm.outputs.version }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          existing_tag=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$VERSION" \
+            --jq ".[] | select(.ref == \"refs/tags/$VERSION\") | .ref")
+          if [ -n "$existing_tag" ]; then
+            existing_commit=$(gh api "repos/$GH_REPO/commits/$VERSION" --jq .sha)
+            if [ "$existing_commit" != "$RELEASE_COMMIT" ]; then
+              echo "Release tag $VERSION already points to another commit" >&2
+              exit 1
+            fi
+          fi
+          gh release create "$VERSION" release/*.tar.gz \
+            --target "$RELEASE_COMMIT" --title "Release $VERSION" --generate-notes

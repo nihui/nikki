@@ -4,6 +4,10 @@
 cmake_minimum_required(VERSION 3.22)
 
 set(NIKKI_VERSION 0.1.0)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/nikki_version.cmake")
+set(NIKKI_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include")
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/include/nikki/version.h.in"
+    "${NIKKI_GENERATED_INCLUDE_DIR}/nikki/version.h" @ONLY)
 set(NIKKI_STANDALONE OFF)
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     project(nikki
@@ -185,6 +189,7 @@ endfunction()
 
 function(nikki_configure_target target)
     target_compile_features(${target} PRIVATE cxx_std_20)
+    target_include_directories(${target} PRIVATE "${NIKKI_GENERATED_INCLUDE_DIR}")
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
         target_link_libraries(${target} PRIVATE emdawnwebgpu_c_include)
@@ -272,9 +277,11 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE}
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/amalgamate.py"
             --output "${NIKKI_AMALGAMATION_SOURCE}"
+            --version-header "${NIKKI_GENERATED_INCLUDE_DIR}/nikki/version.h"
         DEPENDS
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/amalgamate.py"
             "${NIKKI_SOURCE_MANIFEST}"
+            "${NIKKI_GENERATED_INCLUDE_DIR}/nikki/version.h"
             ${nikki_amalgamation_inputs}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Generating ${NIKKI_AMALGAMATION_SOURCE}"
@@ -341,6 +348,10 @@ if(NIKKI_INSTALL)
     include(GNUInstallDirs)
     include(CMakePackageConfigHelpers)
 
+    if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten" AND TARGET nikki)
+        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/nikki_wasm_package.cmake")
+    endif()
+
     if(TARGET nikki_native)
         install(TARGETS nikki_native
             EXPORT nikkiTargets
@@ -353,8 +364,10 @@ if(NIKKI_INSTALL)
             DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/nikki")
     endif()
 
-    install(FILES "${NIKKI_AMALGAMATION_SOURCE}"
-        DESTINATION "${CMAKE_INSTALL_DATADIR}/nikki")
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+        install(FILES "${NIKKI_AMALGAMATION_SOURCE}"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/nikki")
+    endif()
     if(TARGET nikki_native)
         configure_package_config_file(
             "${CMAKE_CURRENT_SOURCE_DIR}/nikkiConfig.cmake.in"

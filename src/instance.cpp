@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "vulkan_internal.h"
+#include "nikki/version.h"
 #include "backend/device.h"
 #include "translator/translator_internal.h"
 
@@ -230,7 +231,8 @@ void impl_get_physical_device_properties(VkPhysicalDevice physical_device, VkPhy
 
     memset(properties, 0, sizeof(VkPhysicalDeviceProperties));
     properties->apiVersion = VK_MAKE_VERSION(1, 1, 0);
-    properties->driverVersion = VK_MAKE_VERSION(0, 1, 0);
+    properties->driverVersion = VK_MAKE_VERSION(NIKKI_DRIVER_VERSION_MAJOR,
+        NIKKI_DRIVER_VERSION_MINOR, NIKKI_DRIVER_VERSION_PATCH);
     properties->vendorID = physical_device_impl->vendor_id;
     properties->deviceID = physical_device_impl->device_id;
     properties->deviceType = physical_device_type(physical_device_impl->adapter_type);
@@ -421,7 +423,7 @@ void impl_get_physical_device_properties2(VkPhysicalDevice physical_device, VkPh
             driver->driverID = static_cast<VkDriverId>(33);
             strncpy(driver->driverName, "nikki experimental non-conformant", VK_MAX_DRIVER_NAME_SIZE - 1);
             driver->driverName[VK_MAX_DRIVER_NAME_SIZE - 1] = '\0';
-            const std::string driver_info = "nikki experimental non-conformant; WebGPU backend: "
+            const std::string driver_info = "nikki " NIKKI_RELEASE_VERSION_STRING " experimental non-conformant; WebGPU backend: "
                                             + physical_device_impl->driver_name;
             strncpy(driver->driverInfo, driver_info.c_str(), VK_MAX_DRIVER_INFO_SIZE - 1);
             driver->driverInfo[VK_MAX_DRIVER_INFO_SIZE - 1] = '\0';
