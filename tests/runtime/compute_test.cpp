@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "../shaders/compute_spirv.h"
+#include "../shaders/buffer_access_spirv.h"
 
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* name);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceExtensionProperties(
@@ -2205,6 +2206,149 @@ int main()
     VkBuffer overlapping_buffer = VK_NULL_HANDLE;
     CHECK_VK(CreateBuffer(device, &alias_buffer_create_info, 0, &overlapping_buffer));
     CHECK_VK(BindBufferMemory(device, overlapping_buffer, alias_memory, 0));
+
+    // Read -> write -> read through the same storage reference must observe
+    // the write when the dynamic indices match, for scalar and vec2 loads.
+    // Different descriptor bindings are not a same-invocation visibility
+    // oracle: these fixtures deliberately keep data and output disjoint.
+    const uint32_t* read_write_shaders[] = {buffer_read_write_scalar_spv, buffer_read_write_vec2_spv};
+    const size_t read_write_shader_sizes[] = {sizeof(buffer_read_write_scalar_spv), sizeof(buffer_read_write_vec2_spv)};
+    for (uint32_t variant = 0; variant < 2; variant++)
+    {
+        VkShaderModuleCreateInfo access_shader_info = shader_module_create_info;
+        access_shader_info.codeSize = read_write_shader_sizes[variant];
+        access_shader_info.pCode = read_write_shaders[variant];
+        VkShaderModule access_shader = VK_NULL_HANDLE;
+        CHECK_VK(CreateShaderModule(device, &access_shader_info, 0, &access_shader));
+        VkComputePipelineCreateInfo access_pipeline_info = pipeline_create_info;
+        access_pipeline_info.stage.module = access_shader;
+        VkPipeline access_pipeline = VK_NULL_HANDLE;
+        CHECK_VK(CreateComputePipelines(device, VK_NULL_HANDLE, 1, &access_pipeline_info, 0, &access_pipeline));
+
+        for (uint32_t read_index = 0; read_index < 2; read_index++)
+        {
+            for (uint32_t write_index = 0; write_index < 2; write_index++)
+            {
+                CHECK_VK(MapMemory(device, alias_memory, 0, VK_WHOLE_SIZE, 0, &mapped));
+                alias_first = (float*)mapped;
+                alias_second = (float*)((unsigned char*)mapped + alias_second_offset);
+                for (uint32_t i = 0; i < element_count; i++)
+                {
+                    alias_first[i] = i < 8 ? 32.f + (float)i : -17.f;
+                    alias_second[i] = -33.f;
+                }
+                UnmapMemory(device, alias_memory);
+
+                descriptor_data.input.buffer = alias_buffers[0];
+                descriptor_data.input.range = 8 * sizeof(float);
+                descriptor_data.output.buffer = alias_buffers[1];
+                descriptor_data.output.range = 8 * sizeof(float);
+                const uint32_t indices[] = {read_index, write_index};
+                CHECK_VK(ResetCommandBuffer(command_buffer, 0));
+                CHECK_VK(BeginCommandBuffer(command_buffer, &begin_info));
+                CmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, access_pipeline);
+                CmdPushDescriptorSetWithTemplateKHR(
+                    command_buffer, descriptor_template, pipeline_layout, 0, &descriptor_data);
+                CmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                                 0, sizeof(indices), indices);
+                CmdDispatch(command_buffer, 1, 1, 1);
+                CHECK_VK(EndCommandBuffer(command_buffer));
+                CHECK_VK(ResetFences(device, 1, &fence));
+                CHECK_VK(QueueSubmit(queue, 1, &submit_info, fence));
+                CHECK_VK(WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
+
+                CHECK_VK(MapMemory(device, alias_memory, 0, VK_WHOLE_SIZE, 0, &mapped));
+                alias_first = (float*)mapped;
+                alias_second = (float*)((unsigned char*)mapped + alias_second_offset);
+                for (uint32_t i = 0; i < element_count; i++)
+                {
+                    float expected_data = i < 8 ? 32.f + (float)i : -17.f;
+                    if (i >= write_index * 4 && i < write_index * 4 + 4)
+                        expected_data = (float)(i % 4 + 1);
+                    float expected_output = -33.f;
+                    if (i < 8)
+                        expected_output = i >= 4 && read_index == write_index
+                                              ? (float)(i % 4 + 1)
+                                              : 32.f + (float)(read_index * 4 + i % 4);
+                    if (alias_first[i] != expected_data || alias_second[i] != expected_output)
+                    {
+                        fprintf(stderr, "buffer read/write mismatch variant=%u read=%u write=%u at %u data=%f expected=%f output=%f expected=%f\n",
+                                variant, read_index, write_index, i, alias_first[i], expected_data,
+                                alias_second[i], expected_output);
+                        UnmapMemory(device, alias_memory);
+                        return 1;
+                    }
+                }
+                UnmapMemory(device, alias_memory);
+            }
+        }
+        DestroyPipeline(device, access_pipeline, 0);
+        DestroyShaderModule(device, access_shader, 0);
+    }
+
+    // A write via one VkBuffer becomes visible through an overlapping buffer
+    // in a later dispatch after an API memory barrier. Adjacent scalar loads
+    // and the final unpaired float use an exact 127-float descriptor range.
+    VkShaderModuleCreateInfo tail_shader_info = shader_module_create_info;
+    tail_shader_info.codeSize = sizeof(buffer_load_tail_spv);
+    tail_shader_info.pCode = buffer_load_tail_spv;
+    VkShaderModule tail_shader = VK_NULL_HANDLE;
+    CHECK_VK(CreateShaderModule(device, &tail_shader_info, 0, &tail_shader));
+    VkComputePipelineCreateInfo tail_pipeline_info = pipeline_create_info;
+    tail_pipeline_info.stage.module = tail_shader;
+    VkPipeline tail_pipeline = VK_NULL_HANDLE;
+    CHECK_VK(CreateComputePipelines(device, VK_NULL_HANDLE, 1, &tail_pipeline_info, 0, &tail_pipeline));
+
+    CHECK_VK(MapMemory(device, memories[0], 0, buffer_size, 0, &mapped));
+    for (uint32_t i = 0; i < element_count; i++)
+        ((float*)mapped)[i] = -(float)i - 0.25f;
+    UnmapMemory(device, memories[0]);
+    descriptor_data.input.buffer = buffers[0];
+    descriptor_data.input.range = buffer_size;
+    descriptor_data.output.buffer = alias_buffers[0];
+    descriptor_data.output.range = buffer_size;
+    push_constants.count = element_count;
+    push_constants.bias = 0.25f;
+    CHECK_VK(ResetCommandBuffer(command_buffer, 0));
+    CHECK_VK(BeginCommandBuffer(command_buffer, &begin_info));
+    CmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    CmdPushDescriptorSetWithTemplateKHR(
+        command_buffer, descriptor_template, pipeline_layout, 0, &descriptor_data);
+    CmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                     0, sizeof(push_constants), &push_constants);
+    CmdDispatch(command_buffer, (element_count + 63) / 64, 1, 1);
+    dispatch_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    dispatch_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    CmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &dispatch_barrier, 0, 0, 0, 0);
+    descriptor_data.input.buffer = overlapping_buffer;
+    descriptor_data.output.buffer = alias_buffers[1];
+    CmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, tail_pipeline);
+    CmdPushDescriptorSetWithTemplateKHR(
+        command_buffer, descriptor_template, pipeline_layout, 0, &descriptor_data);
+    CmdDispatch(command_buffer, 2, 1, 1);
+    CHECK_VK(EndCommandBuffer(command_buffer));
+    CHECK_VK(ResetFences(device, 1, &fence));
+    CHECK_VK(QueueSubmit(queue, 1, &submit_info, fence));
+    CHECK_VK(WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
+    CHECK_VK(MapMemory(device, alias_memory, 0, VK_WHOLE_SIZE, 0, &mapped));
+    alias_first = (float*)mapped;
+    alias_second = (float*)((unsigned char*)mapped + alias_second_offset);
+    for (uint32_t i = 0; i < element_count; i++)
+    {
+        const float expected = (float)i + 0.5f;
+        if (alias_first[i] != expected || alias_second[i] != expected)
+        {
+            fprintf(stderr, "synchronized alias/tail load mismatch at %u expected=%f data=%f output=%f\n",
+                    i, expected, alias_first[i], alias_second[i]);
+            UnmapMemory(device, alias_memory);
+            return 1;
+        }
+    }
+    UnmapMemory(device, alias_memory);
+    DestroyPipeline(device, tail_pipeline, 0);
+    DestroyShaderModule(device, tail_shader, 0);
+
     descriptor_data.input.buffer = alias_buffers[0];
     descriptor_data.output.buffer = overlapping_buffer;
     CHECK_VK(ResetCommandBuffer(command_buffer, 0));
