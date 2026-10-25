@@ -39,7 +39,10 @@ def main():
             result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             if (result.returncode == 0) != accepted:
                 raise AssertionError(f"unexpected architecture configure result: {command}\n{result.stdout}")
-            version_mismatch = f"({bits}bit)" in result.stdout and "not compatible" in result.stdout
+            diagnostic = " ".join(result.stdout.split())
+            version_mismatch = f"({bits}bit)" in diagnostic and (
+                "not compatible" in diagnostic or
+                'Could not find a configuration file for package "nikki" that is compatible' in diagnostic)
             if not accepted and f"requires {args.arch}" not in result.stdout and not version_mismatch:
                 raise AssertionError(f"configure failed for an unexpected reason:\n{result.stdout}")
         config = (package / "nikkiConfig.cmake").read_text()
