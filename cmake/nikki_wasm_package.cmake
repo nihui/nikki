@@ -73,7 +73,22 @@ install(DIRECTORY
     "${NIKKI_DAWN_SOURCE_DIR}/third_party/vulkan-headers/src/include/vulkan"
     "${NIKKI_DAWN_SOURCE_DIR}/third_party/vulkan-headers/src/include/vk_video"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-install(FILES "${NIKKI_EMDAWNWEBGPU_PORT}" "${NIKKI_CLOSURE_EXTERNS}"
+# Bundle the same runtime as the source build's frozen remote port. Consumers
+# must not depend on the producer's Emscripten cache or download it at first link.
+set(nikki_emdawnwebgpu_dir "${CMAKE_CURRENT_BINARY_DIR}/ports")
+file(MAKE_DIRECTORY "${nikki_emdawnwebgpu_dir}")
+get_filename_component(nikki_emdawnwebgpu_archive "${NIKKI_EMDAWNWEBGPU_PACKAGE_URL}" NAME)
+set(nikki_emdawnwebgpu_archive "${nikki_emdawnwebgpu_dir}/${nikki_emdawnwebgpu_archive}")
+file(DOWNLOAD "${NIKKI_EMDAWNWEBGPU_PACKAGE_URL}" "${nikki_emdawnwebgpu_archive}"
+    EXPECTED_HASH "SHA512=${NIKKI_EMDAWNWEBGPU_PACKAGE_SHA512}" TLS_VERIFY ON)
+file(REMOVE_RECURSE "${nikki_emdawnwebgpu_dir}/emdawnwebgpu_pkg")
+file(ARCHIVE_EXTRACT INPUT "${nikki_emdawnwebgpu_archive}" DESTINATION "${nikki_emdawnwebgpu_dir}")
+file(SHA256 "${nikki_emdawnwebgpu_dir}/emdawnwebgpu_pkg/emdawnwebgpu.port.py"
+    NIKKI_EMDAWNWEBGPU_LOCAL_PORT_SHA256)
+# Preserve the complete upstream package, including its headers and notices.
+install(DIRECTORY "${nikki_emdawnwebgpu_dir}/emdawnwebgpu_pkg"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/nikki/ports")
+install(FILES "${NIKKI_CLOSURE_EXTERNS}"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/nikki/ports")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.txt"
     "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md" DESTINATION ".")
