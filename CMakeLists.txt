@@ -18,6 +18,26 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     set(NIKKI_STANDALONE ON)
 endif()
 
+# Select the ABI through the toolchain's configure-time compiler flags, so
+# nikki and every dependency use the same architecture (for example -m64).
+if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(NIKKI_WASM_ARCH "wasm64")
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        set(NIKKI_WASM_ARCH "wasm32")
+    else()
+        message(FATAL_ERROR "Unsupported Emscripten pointer size: ${CMAKE_SIZEOF_VOID_P}")
+    endif()
+    set(NIKKI_WASM_POINTER_SIZE "${CMAKE_SIZEOF_VOID_P}")
+    include(CheckCXXSourceCompiles)
+    unset(NIKKI_WASM_CXX_POINTERS_MATCH_${NIKKI_WASM_POINTER_SIZE} CACHE)
+    check_cxx_source_compiles("typedef char nikki_pointer_size_check[sizeof(void*) == ${NIKKI_WASM_POINTER_SIZE} ? 1 : -1]; int main() {}"
+        NIKKI_WASM_CXX_POINTERS_MATCH_${NIKKI_WASM_POINTER_SIZE})
+    if(NOT NIKKI_WASM_CXX_POINTERS_MATCH_${NIKKI_WASM_POINTER_SIZE})
+        message(FATAL_ERROR "Configure both C and CXX flags for ${NIKKI_WASM_ARCH}; their pointer sizes must match")
+    endif()
+endif()
+
 function(nikki_import_legacy_bool new_name legacy_name default_value description)
     if(DEFINED ${legacy_name} AND NOT DEFINED ${new_name})
         set(${new_name} "${${legacy_name}}" CACHE BOOL "${description}")

@@ -3,10 +3,17 @@
 @PACKAGE_INIT@
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
-    message(FATAL_ERROR "This nikki package targets wasm32 Emscripten, not ${CMAKE_SYSTEM_NAME}")
+    message(FATAL_ERROR "This nikki package targets @NIKKI_WASM_ARCH@ Emscripten, not ${CMAKE_SYSTEM_NAME}")
 endif()
-if(DEFINED CMAKE_SIZEOF_VOID_P AND NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
-    message(FATAL_ERROR "This nikki package requires wasm32 (not MEMORY64)")
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL @NIKKI_WASM_POINTER_SIZE@)
+    message(FATAL_ERROR "This nikki package requires @NIKKI_WASM_ARCH@ (@NIKKI_WASM_POINTER_SIZE@-byte pointers); configure both C and CXX flags for that architecture")
+endif()
+include(CheckCXXSourceCompiles)
+unset(_nikki_wasm_cxx_pointers_match_@NIKKI_WASM_POINTER_SIZE@ CACHE)
+check_cxx_source_compiles("typedef char nikki_pointer_size_check[sizeof(void*) == @NIKKI_WASM_POINTER_SIZE@ ? 1 : -1]; int main() {}"
+    _nikki_wasm_cxx_pointers_match_@NIKKI_WASM_POINTER_SIZE@)
+if(NOT _nikki_wasm_cxx_pointers_match_@NIKKI_WASM_POINTER_SIZE@)
+    message(FATAL_ERROR "This nikki package requires @NIKKI_WASM_ARCH@ CXX compiler flags")
 endif()
 execute_process(COMMAND "${CMAKE_CXX_COMPILER}" -dumpversion
     OUTPUT_VARIABLE _nikki_emcc_version OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -15,6 +22,8 @@ if(NOT _nikki_emcc_result EQUAL 0 OR
    NOT _nikki_emcc_version STREQUAL "@NIKKI_EMSDK_VERSION@")
     message(FATAL_ERROR "nikki requires emsdk @NIKKI_EMSDK_VERSION@; found ${_nikki_emcc_version}")
 endif()
+set(nikki_WASM_ARCH "@NIKKI_WASM_ARCH@")
+set(nikki_WASM_POINTER_SIZE "@NIKKI_WASM_POINTER_SIZE@")
 set(nikki_RELEASE_VERSION "@NIKKI_RELEASE_VERSION@")
 set(nikki_EMSDK_VERSION "@NIKKI_EMSDK_VERSION@")
 set(nikki_DAWN_REVISION "@NIKKI_DAWN_COMMIT@")

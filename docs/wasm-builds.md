@@ -6,7 +6,9 @@ library, or JavaScript SDK.
 
 ## Consume a prebuilt package
 
-Use emsdk **6.0.12** and extract `nikki-YYYYMMDD-wasm32-emscripten.tar.gz`.
+Use emsdk **6.0.12** and extract either
+`nikki-YYYYMMDD-wasm32-emscripten.tar.gz` or
+`nikki-YYYYMMDD-wasm64-emscripten.tar.gz`.
 The archive contains one directory with the same basename. Point CMake at
 that directory, not at a nikki source checkout:
 
@@ -15,6 +17,12 @@ emcmake cmake -S my-app -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -Dnikki_DIR=/path/to/nikki-YYYYMMDD-wasm32-emscripten/lib/cmake/nikki
 cmake --build build
+
+# For wasm64, select the ABI before configuring any dependencies.
+emcmake cmake -S my-app -B build-wasm64 -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS=-m64 -DCMAKE_CXX_FLAGS=-m64 \
+  -Dnikki_DIR=/path/to/nikki-YYYYMMDD-wasm64-emscripten/lib/cmake/nikki
+cmake --build build-wasm64
 ```
 
 ```cmake
@@ -36,15 +44,21 @@ separately: this is not an offline toolchain bundle.
 `nikki::static` propagates the port, ASYNCIFY, 65536-byte Asyncify stack,
 1048576-byte WASM stack, and Release Closure options. Consumers choose their
 own module exports, JavaScript interface, environment, heap and filesystem
-options. The package is wasm32, single-threaded, and does not target MEMORY64
-or pthreads. It checks the exact compiler version and bundled local port hash.
+options. Both packages are single-threaded (not pthreads). The wasm64 package
+uses Memory64; wasm32 remains available for consumers without browser support.
+CMake rejects an SDK whose pointer size does not match the consumer, including
+mismatched C and CXX flags. It also checks the exact compiler version and bundled
+local port hash. Do not add `-m64` only at the final link: rebuild every dependency
+for the chosen architecture in a separate build directory.
 
 Root metadata files are `release-version.txt`, `source-revision.txt`,
-`dawn-revision.txt` and `emsdk-version.txt`. The CMake package also exposes
-`nikki_RELEASE_VERSION`, `nikki_EMSDK_VERSION`, and `nikki_DAWN_REVISION`.
+`dawn-revision.txt`, `emsdk-version.txt` and `architecture.txt`. The CMake package also exposes
+`nikki_RELEASE_VERSION`, `nikki_EMSDK_VERSION`, `nikki_DAWN_REVISION`,
+`nikki_WASM_ARCH` and `nikki_WASM_POINTER_SIZE`.
 Pin a successful producer workflow run and its full source revision when
 consuming Actions artifacts. The artifact is named
-`nikki-YYYYMMDD-wasm32-emscripten` and contains the single `.tar.gz` file.
+`nikki-YYYYMMDD-wasm32-emscripten` or `nikki-YYYYMMDD-wasm64-emscripten`
+and contains the matching single `.tar.gz` file.
 Do not substitute the old `nikki-emscripten-static` artifact: it contains
 only an intermediate archive and cannot satisfy this consumer contract.
 
@@ -65,14 +79,18 @@ git submodule update --init third_party/dawn
 python3 tools/bootstrap_dawn.py
 VERSION=$(date -u +'%Y%m%d')
 export BINARYEN_CORES=1 # Bound link-time memory use, without changing optimization flags.
-emcmake cmake -S . -B build-wasm-6.0.12 -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib \
-  -DNIKKI_RELEASE_VERSION="$VERSION" \
-  -DNIKKI_BUILD_STATIC=ON -DNIKKI_BUILD_DRIVER=OFF \
-  -DNIKKI_BUILD_TESTS=ON -DNIKKI_INSTALL=ON
-cmake --build build-wasm-6.0.12 --target nikki nikki_amalgamate test_nikki_compute --parallel 2
-cmake --install build-wasm-6.0.12 --prefix "$PWD/stage-wasm-6.0.12"
-python3 tools/package_wasm.py --stage stage-wasm-6.0.12 --output release --version "$VERSION"
+for BITS in 32 64; do
+  emcmake cmake -S . -B build-wasm$BITS-6.0.12 -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib \
+    -DCMAKE_C_FLAGS=-m$BITS -DCMAKE_CXX_FLAGS=-m$BITS \
+    -DNIKKI_RELEASE_VERSION="$VERSION" \
+    -DNIKKI_BUILD_STATIC=ON -DNIKKI_BUILD_DRIVER=OFF \
+    -DNIKKI_BUILD_TESTS=ON -DNIKKI_INSTALL=ON
+  cmake --build build-wasm$BITS-6.0.12 --target nikki nikki_amalgamate test_nikki_compute --parallel 2
+  cmake --install build-wasm$BITS-6.0.12 --prefix "$PWD/stage-wasm$BITS-6.0.12"
+  python3 tools/package_wasm.py --stage stage-wasm$BITS-6.0.12 --output release \
+    --version "$VERSION" --arch wasm$BITS
+done
 ```
 
 When configuring a WASM installation, CMake downloads and SHA512-verifies
@@ -88,22 +106,28 @@ and the experimental/non-conformant status are unchanged. The API project
 version remains 0.1.0. The generated amalgamation embeds its configured
 version header.
 
-The WASM workflow selects its date once, builds and packages the SDK,
+The WASM workflow selects its date once for both architectures. Each matrix job
+rebuilds and packages nikki and its complete static dependency closure,
 extracts it to a different directory, then hides the entire producer
 checkout while compiling a clean consumer. The consumer has a fresh ports
 cache and no cached Emdawn library. The workflow verifies that the ports
 cache stays empty and the bundled runtime is rebuilt, proving no dependency
 port was downloaded or reused from the producer. It runs that consumer's
 Vulkan compute and readback test in Chromium SwiftShader, checking driver ID/date,
-WebGPU validation errors, device loss and asynchronous worker progression.
+WebGPU validation errors, adapter information, device loss and asynchronous worker
+progression through Asyncify. It also rejects mismatched SDK consumers and tests
+JavaScript bridge indexing with both sparse addresses and real Memory64 heap
+addresses above 4 GiB, touching only a few pages rather than running a large
+application workload.
 This catches missing static/runtime dependencies, accidental downloads and
 absolute build-tree paths.
-The `nikki-YYYYMMDD-webgpu-smoke` artifact is the linked browser test,
+Each `nikki-YYYYMMDD-wasm{32,64}-webgpu-smoke` artifact is the linked browser test,
 not a public JavaScript API. It records raw/gzip JS and WASM sizes.
 
 Pushes and PRs only build artifacts. A manual `wasm` workflow run publishes
-a date-tagged release only when its `publish` input is explicitly enabled,
-after all package and browser checks pass. Existing date tags are never
+a date-tagged release only when its `publish` input is explicitly enabled.
+Both architecture jobs must pass all package and browser checks; the release
+job requires both archives before publishing them together. Existing date tags are never
 repointed to a different source commit.
 
 ## Browser smoke test
@@ -113,9 +137,16 @@ npm ci --prefix tests/browser
 NIKKI_WEBGPU_TEST_CHROME=/path/to/chrome \
 NIKKI_WEBGPU_TEST_ADAPTER=swiftshader \
   node tests/browser/run_webgpu_test.mjs \
-  build-wasm-6.0.12/tests/test_nikki_compute.js --require-webgpu
+  build-wasm64-6.0.12/tests/test_nikki_compute.js --require-webgpu
 ```
 
 SwiftShader tests WebGPU execution without assuming physical GPU access.
 Browser/adapter support and optional features are distinct from compile
 and link success. Serve browser artifacts over HTTP, not `file://`.
+
+Memory64 expands the host linear-memory address space; it does not increase
+WebGPU device/buffer limits or inherently improve GPU performance. Consumers
+choose their own heap-growth and maximum-memory flags. The browser compute
+test verifies real wasm64 execution; the focused Node bridge test additionally
+reserves a Memory64 heap larger than 4 GiB and writes/readbacks at high addresses.
+Neither is a full multi-gigabyte application or GPU performance benchmark.

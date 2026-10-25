@@ -6,7 +6,8 @@ find_package(nikki CONFIG REQUIRED)
 add_executable(test_nikki_compute runtime/compute_test.cpp)
 target_compile_definitions(test_nikki_compute PRIVATE
     NIKKI_TEST_RELEASE_VERSION=${nikki_RELEASE_VERSION}
-    NIKKI_TEST_RELEASE_VERSION_STRING="${nikki_RELEASE_VERSION}")
+    NIKKI_TEST_RELEASE_VERSION_STRING="${nikki_RELEASE_VERSION}"
+    $<$<BOOL:${nikki_WASM_POINTER_SIZE}>:NIKKI_TEST_WASM_POINTER_SIZE=${nikki_WASM_POINTER_SIZE}>)
 target_link_libraries(test_nikki_compute PRIVATE nikki::static)
 target_link_options(test_nikki_compute PRIVATE
     "--no-entry" "-sMODULARIZE=1" "-sEXPORT_ES6=1"
