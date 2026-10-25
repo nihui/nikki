@@ -47,8 +47,9 @@ All other supported commands are obtained through Vulkan proc lookup, with scope
 The source build requires CMake 3.22 or newer. Clone the project with its pinned Dawn submodule, bootstrap Dawn's dependencies, then build:
 
 ```bash
-git clone --recursive https://github.com/nihui/nikki.git
+git clone https://github.com/nihui/nikki.git
 cd nikki
+git submodule update --init third_party/dawn
 python3 tools/bootstrap_dawn.py
 cmake -S . -B build \
   -DNIKKI_BUILD_STATIC=ON \
@@ -57,6 +58,8 @@ cmake -S . -B build \
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+Initialize only the top-level Dawn submodule. The bootstrap script fetches its required dependencies; recursive checkout also traverses unrelated Chromium repositories.
 
 `NIKKI_BUILD_STATIC`, `NIKKI_BUILD_DRIVER`, `NIKKI_BUILD_TESTS`, `NIKKI_BUILD_AMALGAMATION`, and `NIKKI_INSTALL` control the corresponding targets. The old `NIKKI_BUILD_STATIC_LIBRARY`, `NIKKI_BUILD_NATIVE_DRIVER`, and `NIKKI_USE_AMALGAMATION` names remain deprecated aliases. Native builds may choose a `STATIC` or `SHARED` Dawn monolithic library with `NIKKI_DAWN_LIBRARY_TYPE`.
 
@@ -67,7 +70,7 @@ nikki::static
 nikki::driver
 ```
 
-The existing `nikki::nikki` alias remains available for `nikki::static`. When every library and test target is disabled, adding this directory does not locate or configure Dawn. An installation containing the native package exports `nikki::driver` without exposing Dawn, Tint or SPIRV-Tools as package dependencies. The static target remains build-tree-only.
+The existing `nikki::nikki` alias remains available for `nikki::static`. When every library and test target is disabled, adding this directory does not locate or configure Dawn. The native package exports `nikki::driver` without exposing Dawn, Tint or SPIRV-Tools as package dependencies; native `nikki::static` remains build-tree-only. The [WASM SDK](docs/wasm-builds.md) exports `nikki::static` together with its complete static link dependencies.
 
 ## Single-source distribution
 

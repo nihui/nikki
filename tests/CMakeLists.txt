@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 add_executable(test_nikki_compute runtime/compute_test.cpp)
+target_compile_definitions(test_nikki_compute PRIVATE
+    NIKKI_TEST_RELEASE_VERSION=${NIKKI_RELEASE_VERSION}
+    NIKKI_TEST_RELEASE_VERSION_STRING="${NIKKI_RELEASE_VERSION}")
 add_executable(test_nikki_profile api/profile_test.cpp)
 add_executable(test_nikki_abi_guard api/abi_guard_test.cpp)
 add_executable(test_nikki_non_conformant_warning
@@ -52,6 +55,23 @@ foreach(nikki_test_target IN LISTS nikki_test_targets)
 endforeach()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+    # Keep the compute test browser-loadable, rather than merely proving that
+    # the Emscripten linker can produce a wasm file.
+    target_link_options(test_nikki_compute PRIVATE
+        "--no-entry"
+        "-sMODULARIZE=1"
+        "-sEXPORT_ES6=1"
+        "-sENVIRONMENT=worker"
+        "-sEXPORTED_FUNCTIONS=['_main']"
+        "-sEXPORTED_RUNTIME_METHODS=['ccall']")
+    set_target_properties(test_nikki_compute PROPERTIES SUFFIX ".js")
+    foreach(nikki_browser_asset webgpu_test.html webgpu_test_worker.mjs)
+        configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/browser/${nikki_browser_asset}"
+            "${CMAKE_CURRENT_BINARY_DIR}/${nikki_browser_asset}"
+            COPYONLY)
+    endforeach()
+
     if(NOT TARGET nikki)
         message(FATAL_ERROR "nikki tests require NIKKI_BUILD_STATIC")
     endif()
@@ -99,6 +119,13 @@ else()
         LABELS "nikki;api;conformance")
 
     if(Python3_Interpreter_FOUND)
+        add_test(NAME test_nikki_version
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/version_test.py"
+                --cmake "${CMAKE_COMMAND}")
+        set_tests_properties(test_nikki_version PROPERTIES
+            LABELS "nikki;structure;version")
+
         add_test(NAME test_nikki_source_manifest
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/manifest_test.py")
@@ -109,7 +136,8 @@ else()
             add_test(NAME test_nikki_amalgamation_fresh
                 COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/amalgamate.py"
-                    --check "${NIKKI_AMALGAMATION_SOURCE}")
+                    --check "${NIKKI_AMALGAMATION_SOURCE}"
+                    --version-header "${NIKKI_GENERATED_INCLUDE_DIR}/nikki/version.h")
             set_tests_properties(test_nikki_amalgamation_fresh PROPERTIES
                 LABELS "nikki;structure;amalgamation")
         endif()

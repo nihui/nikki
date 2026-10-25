@@ -1,0 +1,44 @@
+# Copyright 2026 nihui
+# SPDX-License-Identifier: Apache-2.0
+@PACKAGE_INIT@
+
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+    message(FATAL_ERROR "This nikki package targets wasm32 Emscripten, not ${CMAKE_SYSTEM_NAME}")
+endif()
+if(DEFINED CMAKE_SIZEOF_VOID_P AND NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+    message(FATAL_ERROR "This nikki package requires wasm32 (not MEMORY64)")
+endif()
+execute_process(COMMAND "${CMAKE_CXX_COMPILER}" -dumpversion
+    OUTPUT_VARIABLE _nikki_emcc_version OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE _nikki_emcc_result)
+if(NOT _nikki_emcc_result EQUAL 0 OR
+   NOT _nikki_emcc_version STREQUAL "@NIKKI_EMSDK_VERSION@")
+    message(FATAL_ERROR "nikki requires emsdk @NIKKI_EMSDK_VERSION@; found ${_nikki_emcc_version}")
+endif()
+set(nikki_RELEASE_VERSION "@NIKKI_RELEASE_VERSION@")
+set(nikki_EMSDK_VERSION "@NIKKI_EMSDK_VERSION@")
+set(nikki_DAWN_REVISION "@NIKKI_DAWN_COMMIT@")
+
+if(NOT TARGET nikki::static)
+    set_and_check(_nikki_archive "@PACKAGE_CMAKE_INSTALL_LIBDIR@/libnikki.a")
+    set_and_check(_nikki_include "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+    set_and_check(_nikki_port "@PACKAGE_CMAKE_INSTALL_DATADIR@/nikki/ports/@NIKKI_EMDAWNWEBGPU_PORT_FILENAME@")
+    set_and_check(_nikki_externs "@PACKAGE_CMAKE_INSTALL_DATADIR@/nikki/ports/webgpu_immediates.externs.js")
+    file(SHA256 "${_nikki_port}" _nikki_port_sha256)
+    if(NOT _nikki_port_sha256 STREQUAL "@NIKKI_EMDAWNWEBGPU_PORT_SHA256@")
+        message(FATAL_ERROR "The packaged Emdawnwebgpu port failed its pinned SHA256 check")
+    endif()
+    set(_nikki_dependencies "")
+    foreach(_nikki_filename IN ITEMS @NIKKI_WASM_DEPENDENCY_FILES@)
+        set_and_check(_nikki_dependency "@PACKAGE_CMAKE_INSTALL_LIBDIR@/nikki/${_nikki_filename}")
+        list(APPEND _nikki_dependencies "${_nikki_dependency}")
+    endforeach()
+    add_library(nikki::static STATIC IMPORTED)
+    set_target_properties(nikki::static PROPERTIES
+        IMPORTED_LOCATION "${_nikki_archive}"
+        IMPORTED_LINK_INTERFACE_LANGUAGES "CXX"
+        INTERFACE_INCLUDE_DIRECTORIES "${_nikki_include}"
+        INTERFACE_LINK_LIBRARIES "-Wl,--start-group;${_nikki_dependencies};-Wl,--end-group"
+        INTERFACE_LINK_OPTIONS "--use-port=${_nikki_port}:cpp_bindings=false;-sASYNCIFY=1;-sASYNCIFY_STACK_SIZE=@NIKKI_ASYNCIFY_STACK_SIZE@;-sSTACK_SIZE=@NIKKI_WASM_STACK_SIZE@;$<$<CONFIG:Release>:--closure=1>;$<$<CONFIG:Release>:--closure-args=--externs=${_nikki_externs}>")
+endif()
+check_required_components(nikki)
