@@ -12,6 +12,20 @@ import tarfile
 from bootstrap_dawn import load_versions
 
 
+def validate_emdawnwebgpu(stage):
+    package = stage / "share/nikki/ports/emdawnwebgpu_pkg"
+    required = ["emdawnwebgpu.port.py", "README.md", "VERSION.txt",
+                "webgpu/include/webgpu/webgpu.h", "webgpu/src/webgpu.cpp",
+                "webgpu/src/library_webgpu.js", "webgpu/src/library_webgpu_enum_tables.js",
+                "webgpu/src/library_webgpu_generated_struct_info.js",
+                "webgpu/src/library_webgpu_generated_sig_info.js",
+                "webgpu/src/webgpu-externs.js", "webgpu/src/LICENSE",
+                "webgpu_cpp/include/webgpu/webgpu_cpp.h", "webgpu_cpp/LICENSE"]
+    for name in required:
+        if not (package / name).is_file():
+            raise SystemExit(f"missing Emdawnwebgpu package input: {name}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", type=Path, required=True)
@@ -27,11 +41,11 @@ def main():
     expected = ["lib/libnikki.a", "lib/cmake/nikki/nikkiConfig.cmake",
                 "lib/cmake/nikki/nikkiConfigVersion.cmake", "include/vulkan/vulkan.h",
                 "LICENSE.txt", "THIRD_PARTY_NOTICES.md",
-                "share/nikki/ports/" + versions["NIKKI_EMDAWNWEBGPU_PORT_FILENAME"],
                 "share/nikki/ports/webgpu_immediates.externs.js"]
     for name in expected:
         if not (stage / name).is_file():
             raise SystemExit(f"missing package input: {name}")
+    validate_emdawnwebgpu(stage)
     config = (stage / "lib/cmake/nikki/nikkiConfig.cmake").read_text()
     release_versions = re.findall(r'^set\(nikki_RELEASE_VERSION "([^"]*)"\)$', config, re.MULTILINE)
     if release_versions != [args.version]:
@@ -62,7 +76,8 @@ def main():
         "Prebuilt wasm32 Emscripten SDK, not a JavaScript module.\n"
         f"With emsdk {versions['NIKKI_EMSDK_VERSION']} use find_package(nikki CONFIG REQUIRED), then link nikki::static.\n"
         "Set nikki_DIR to this directory/lib/cmake/nikki. Tint/SPIRV-Tools and Vulkan headers are included.\n"
-        "The pinned Emdawnwebgpu port downloads its runtime on first use; no Dawn source is needed.\n"
+        "The pinned Emdawnwebgpu runtime, local port and notices are included; no dependency download or Dawn source is needed.\n"
+        "Install the Emscripten toolchain separately; it is not included.\n"
         "Browser module exports and application flags remain the consumer's responsibility.\n")
     name = f"nikki-{args.version}-wasm32-emscripten"
     args.output.mkdir(parents=True, exist_ok=True)

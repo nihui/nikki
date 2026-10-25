@@ -27,17 +27,17 @@ sysroot by default, so `CMAKE_PREFIX_PATH` alone is not sufficient.
 
 The package includes `lib/libnikki.a`, the complete reachable static link
 closure (Tint, SPIRV-Tools, Dawn utilities and Abseil), Vulkan headers,
-the pinned Emdawnwebgpu remote port, Closure externs,
-and relocatable CMake package files. No nikki/Dawn source or producer build
-tree is needed. The remote port downloads its pinned WebGPU runtime on the
-first link, so an uncached consumer still needs network access. This is not
-an offline toolchain bundle.
+the pinned Emdawnwebgpu runtime package (local port, JavaScript, C/C++ headers
+and notices), Closure externs, and relocatable CMake package files. No
+nikki/Dawn source or producer build tree is needed, and linking requires no
+dependency downloads, even with an empty ports cache. Install emsdk 6.0.12
+separately: this is not an offline toolchain bundle.
 
 `nikki::static` propagates the port, ASYNCIFY, 65536-byte Asyncify stack,
 1048576-byte WASM stack, and Release Closure options. Consumers choose their
 own module exports, JavaScript interface, environment, heap and filesystem
 options. The package is wasm32, single-threaded, and does not target MEMORY64
-or pthreads. It checks the exact compiler version and frozen port hash.
+or pthreads. It checks the exact compiler version and bundled local port hash.
 
 Root metadata files are `release-version.txt`, `source-revision.txt`,
 `dawn-revision.txt` and `emsdk-version.txt`. The CMake package also exposes
@@ -51,8 +51,8 @@ only an intermediate archive and cannot satisfy this consumer contract.
 ## Build and package
 
 The dependency pins remain in the top-level `CMakeLists.txt`: emsdk 6.0.12,
-the Dawn/Tint commit, and the SHA-verified Emdawnwebgpu port. Initialize only
-the top-level Dawn submodule; recursive checkout traverses unrelated,
+the Dawn/Tint commit, and the SHA-verified Emdawnwebgpu port and runtime
+archive. Initialize only the top-level Dawn submodule; recursive checkout traverses unrelated,
 sometimes inaccessible Chromium repositories.
 
 When upgrading Emscripten, use fresh build and staging directories and rebuild
@@ -75,6 +75,11 @@ cmake --install build-wasm-6.0.12 --prefix "$PWD/stage-wasm-6.0.12"
 python3 tools/package_wasm.py --stage stage-wasm-6.0.12 --output release --version "$VERSION"
 ```
 
+When configuring a WASM installation, CMake downloads and SHA512-verifies
+the frozen Emdawnwebgpu release package for inclusion in the SDK. Subsequent
+configures reuse the verified archive in the build directory. Native builds
+and source-build port selection are unchanged.
+
 `NIKKI_RELEASE_VERSION` defaults to the UTC configure date and is cached.
 It must be a real date in 2000–2099. The Vulkan `driverVersion` uses the same
 encoding as momoten: `(year - 2000).month.day`, so `20261024` becomes
@@ -85,10 +90,14 @@ version header.
 
 The WASM workflow selects its date once, builds and packages the SDK,
 extracts it to a different directory, then hides the entire producer
-checkout while compiling a clean consumer. It runs that consumer's Vulkan
-compute and readback test in Chromium SwiftShader, checking driver ID/date,
+checkout while compiling a clean consumer. The consumer has a fresh ports
+cache and no cached Emdawn library. The workflow verifies that the ports
+cache stays empty and the bundled runtime is rebuilt, proving no dependency
+port was downloaded or reused from the producer. It runs that consumer's
+Vulkan compute and readback test in Chromium SwiftShader, checking driver ID/date,
 WebGPU validation errors, device loss and asynchronous worker progression.
-This catches missing static dependencies and absolute build-tree paths.
+This catches missing static/runtime dependencies, accidental downloads and
+absolute build-tree paths.
 The `nikki-YYYYMMDD-webgpu-smoke` artifact is the linked browser test,
 not a public JavaScript API. It records raw/gzip JS and WASM sizes.
 
