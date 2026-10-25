@@ -11,6 +11,10 @@
 #include <string.h>
 #include <vector>
 
+#if defined(NIKKI_TEST_WASM_POINTER_SIZE)
+static_assert(sizeof(void*) == NIKKI_TEST_WASM_POINTER_SIZE, "unexpected WASM SDK pointer width");
+#endif
+
 #include "../shaders/compute_spirv.h"
 #include "../shaders/buffer_access_spirv.h"
 
@@ -285,6 +289,11 @@ int main()
                 physical_device_properties.deviceName);
         return 1;
     }
+#if defined(__EMSCRIPTEN__)
+    // The browser runner compares this with the actual GPUAdapter.info. A
+    // swallowed EM_JS pointer error must not pass as a generic WebGPU name.
+    printf("[nikki-test] physical-device-name: %s\n", physical_device_properties.deviceName);
+#endif
     if (physical_device_properties.limits.maxComputeWorkGroupInvocations < 64)
     {
         fprintf(stderr, "maxComputeWorkGroupInvocations is too small\n");

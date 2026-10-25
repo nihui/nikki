@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish the verified YYYYMMDD release
+        description: Publish both verified YYYYMMDD SDKs (wasm32 and wasm64)
         type: boolean
         default: false
 
@@ -21,20 +21,32 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      value: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Select release version once for both architectures
+        id: version
+        run: echo "value=$(date -u +'%Y%m%d')" >> "$GITHUB_OUTPUT"
+
   build-wasm:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: wasm32
+            flags: -m32
+          - arch: wasm64
+            flags: -m64
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
       # Bound Binaryen memory use independently of the host CPU count.
       BINARYEN_CORES: 1
 
-    outputs:
-      version: ${{ steps.version.outputs.value }}
     steps:
-      - name: Select release version once
-        id: version
-        run: echo "value=$(date -u +'%Y%m%d')" >> "$GITHUB_OUTPUT"
-
       - uses: actions/checkout@v4
         with:
           # Dawn dependencies are bootstrapped by tools/bootstrap_dawn.py.
@@ -68,13 +80,16 @@ jobs:
         run: |
           python3 tests/cmake/version_test.py
           python3 tests/cmake/manifest_test.py
+          node tests/runtime/wasm_pointer_bridge_test.mjs --require-memory64
 
       - name: Configure
         run: |
           emcmake cmake -S . -B build-wasm -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS=${{ matrix.flags }} \
+            -DCMAKE_CXX_FLAGS=${{ matrix.flags }} \
             -DCMAKE_INSTALL_LIBDIR=lib \
-            -DNIKKI_RELEASE_VERSION=${{ steps.version.outputs.value }} \
+            -DNIKKI_RELEASE_VERSION=${{ needs.version.outputs.value }} \
             -DNIKKI_BUILD_STATIC=ON \
             -DNIKKI_BUILD_DRIVER=OFF \
             -DNIKKI_BUILD_TESTS=ON \
@@ -95,15 +110,16 @@ jobs:
           cmake --install build-wasm --prefix "$PWD/stage-wasm"
           test ! -e stage-wasm/include/nikki/version.h
           python3 tests/cmake/wasm_package_test.py --stage stage-wasm
+          python3 tests/cmake/wasm_arch_test.py --stage stage-wasm --arch ${{ matrix.arch }}
           python3 tools/package_wasm.py --stage stage-wasm --output release \
-            --version "${{ steps.version.outputs.value }}"
+            --version "${{ needs.version.outputs.value }}" --arch ${{ matrix.arch }}
 
       - name: Link a clean relocated consumer without the producer tree
         shell: bash
         run: |
           consumer="$RUNNER_TEMP/nikki-installed-consumer"
           mkdir -p "$consumer/package" "$consumer/source"
-          tar -xzf "release/nikki-${{ steps.version.outputs.value }}-wasm32-emscripten.tar.gz" \
+          tar -xzf "release/nikki-${{ needs.version.outputs.value }}-${{ matrix.arch }}-emscripten.tar.gz" \
             -C "$consumer/package" --strip-components=1
           cp tests/installed/CMakeLists.txt "$consumer/source/"
           cp -r tests/runtime tests/shaders tests/browser "$consumer/source/"
@@ -122,7 +138,9 @@ jobs:
           mv "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE.hidden"
           trap 'mv "$GITHUB_WORKSPACE.hidden" "$GITHUB_WORKSPACE"' EXIT
           emcmake cmake -S "$consumer/source" -B "$consumer/build" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -Dnikki_DIR="$consumer/package/lib/cmake/nikki"
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS=${{ matrix.flags }} -DCMAKE_CXX_FLAGS=${{ matrix.flags }} \
+            -Dnikki_DIR="$consumer/package/lib/cmake/nikki"
           cmake --build "$consumer/build" --parallel 2
           test -s "$consumer/build/test_nikki_compute.wasm"
           # Remote ports create entries here before fetching. An empty directory
@@ -165,35 +183,39 @@ jobs:
       - name: Upload consumable Emscripten SDK
         uses: actions/upload-artifact@v4
         with:
-          name: nikki-${{ steps.version.outputs.value }}-wasm32-emscripten
+          name: nikki-${{ needs.version.outputs.value }}-${{ matrix.arch }}-emscripten
           path: release/*.tar.gz
           if-no-files-found: error
 
       - name: Upload browser WebGPU smoke test
         uses: actions/upload-artifact@v4
         with:
-          name: nikki-${{ steps.version.outputs.value }}-webgpu-smoke
+          name: nikki-${{ needs.version.outputs.value }}-${{ matrix.arch }}-webgpu-smoke
           path: artifact/browser/
           if-no-files-found: error
 
   release:
     if: github.event_name == 'workflow_dispatch' && inputs.publish
-    needs: build-wasm
+    needs: [version, build-wasm]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: nikki-${{ needs.build-wasm.outputs.version }}-wasm32-emscripten
+          pattern: nikki-${{ needs.version.outputs.value }}-wasm*-emscripten
+          merge-multiple: true
           path: release
       - name: Publish the verified date-version SDK
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          VERSION: ${{ needs.build-wasm.outputs.version }}
+          VERSION: ${{ needs.version.outputs.value }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
+          # Never publish a partial architecture pair.
+          test -s "release/nikki-$VERSION-wasm32-emscripten.tar.gz"
+          test -s "release/nikki-$VERSION-wasm64-emscripten.tar.gz"
           existing_tag=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$VERSION" \
             --jq ".[] | select(.ref == \"refs/tags/$VERSION\") | .ref")
           if [ -n "$existing_tag" ]; then

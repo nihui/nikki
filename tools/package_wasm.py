@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--stage", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--arch", choices=("wasm32", "wasm64"), required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"20\d{6}", args.version):
         parser.error("version must be YYYYMMDD in 2000-2099")
@@ -50,6 +51,10 @@ def main():
     release_versions = re.findall(r'^set\(nikki_RELEASE_VERSION "([^"]*)"\)$', config, re.MULTILINE)
     if release_versions != [args.version]:
         raise SystemExit("installed package version does not match release version")
+    architectures = re.findall(r'^set\(nikki_WASM_ARCH "([^"]*)"\)$', config, re.MULTILINE)
+    pointer_sizes = re.findall(r'^set\(nikki_WASM_POINTER_SIZE "([^"]*)"\)$', config, re.MULTILINE)
+    if architectures != [args.arch] or pointer_sizes != [{"wasm32": "4", "wasm64": "8"}[args.arch]]:
+        raise SystemExit("installed package architecture does not match release architecture")
     libraries = list(stage.glob("lib/nikki/*.a"))
     if not libraries or not any("SPIRV-Tools" in path.name for path in libraries) or not any("tint" in path.name for path in libraries):
         raise SystemExit("missing Tint/SPIRV-Tools link closure")
@@ -63,6 +68,7 @@ def main():
     def git_revision(directory):
         return subprocess.check_output(["git", "-C", str(directory), "rev-parse", "HEAD"], text=True).strip()
     metadata = {"release-version.txt": args.version,
+                "architecture.txt": args.arch,
                 "source-revision.txt": git_revision(root),
                 "dawn-revision.txt": git_revision(root / "third_party/dawn"),
                 "emsdk-version.txt": subprocess.check_output(["emcc", "-dumpversion"], text=True).strip()}
@@ -73,13 +79,14 @@ def main():
     for filename, content in metadata.items():
         (stage / filename).write_text(content + "\n")
     (stage / "README.txt").write_text(
-        "Prebuilt wasm32 Emscripten SDK, not a JavaScript module.\n"
+        f"Prebuilt {args.arch} Emscripten SDK, not a JavaScript module.\n"
         f"With emsdk {versions['NIKKI_EMSDK_VERSION']} use find_package(nikki CONFIG REQUIRED), then link nikki::static.\n"
+        f"Configure both CMAKE_C_FLAGS and CMAKE_CXX_FLAGS with -m{args.arch[4:]} before building any dependencies.\n"
         "Set nikki_DIR to this directory/lib/cmake/nikki. Tint/SPIRV-Tools and Vulkan headers are included.\n"
         "The pinned Emdawnwebgpu runtime, local port and notices are included; no dependency download or Dawn source is needed.\n"
         "Install the Emscripten toolchain separately; it is not included.\n"
         "Browser module exports and application flags remain the consumer's responsibility.\n")
-    name = f"nikki-{args.version}-wasm32-emscripten"
+    name = f"nikki-{args.version}-{args.arch}-emscripten"
     args.output.mkdir(parents=True, exist_ok=True)
     archive = args.output / (name + ".tar.gz")
     with tarfile.open(archive, "w:gz") as bundle:

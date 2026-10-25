@@ -27,6 +27,9 @@ self.addEventListener("message", async (event) => {
     let event_loop_ticks = 0;
     let webgpu_used = false;
     let adapter_info = "";
+    const adapter_device_names = [];
+    const device_name_marker = "[nikki-test] physical-device-name: ";
+    let physical_device_name = null;
     let device_lost = false;
     const validation_errors = [];
     const interval = setInterval(() => event_loop_ticks++, 10);
@@ -43,6 +46,11 @@ self.addEventListener("message", async (event) => {
             return request_adapter(...arguments_).then((adapter) => {
                 if (adapter) {
                     const info = adapter.info || {};
+                    // Match the public Vulkan name, including its 255-byte
+                    // limit, rather than accepting the bridge's silent fallback.
+                    const device_name = "nikki experimental non-conformant: "
+                        + (info.device || info.architecture || "WebGPU");
+                    adapter_device_names.push(new TextDecoder().decode(new TextEncoder().encode(device_name).slice(0, 255)));
                     adapter_info = [info.vendor, info.architecture, info.device, info.description]
                         .filter((value) => value)
                         .join(" ");
@@ -58,6 +66,9 @@ self.addEventListener("message", async (event) => {
         const module = await create_module({
             noInitialRun: true,
             print: (message) => {
+                if (event.data.name === "test_nikki_compute" && message.startsWith(device_name_marker)) {
+                    physical_device_name = message.slice(device_name_marker.length);
+                }
                 if (message.startsWith("[nikki]") || /^\[0 .+\]  queueC=/.test(message)) webgpu_used = true;
                 send_log("stdout", message);
             },
@@ -80,11 +91,19 @@ self.addEventListener("message", async (event) => {
         const return_code = await module.ccall("main", "number", [], [], { async: true });
 
         if (return_code !== 0) validation_errors.push(`C++ test returned ${return_code}`);
+        // This harness also runs ncnn tests, which do not emit this marker.
+        if (event.data.name === "test_nikki_compute") {
+            if (physical_device_name === null) {
+                validation_errors.push("C++ compute test did not report its Vulkan physical device name");
+            } else if (!adapter_device_names.includes(physical_device_name)) {
+                validation_errors.push(`Vulkan device name ${JSON.stringify(physical_device_name)} does not match GPUAdapter.info: ${JSON.stringify(adapter_device_names)}`);
+            }
+        }
 
         send_result({
             schema: 1,
             name: event.data.name,
-            status: return_code === 0 ? "pass" : "fail",
+            status: return_code === 0 && validation_errors.length === 0 ? "pass" : "fail",
             assertions: 1,
             validation_errors,
             device_lost,

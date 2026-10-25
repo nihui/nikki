@@ -4,7 +4,8 @@
 add_executable(test_nikki_compute runtime/compute_test.cpp)
 target_compile_definitions(test_nikki_compute PRIVATE
     NIKKI_TEST_RELEASE_VERSION=${NIKKI_RELEASE_VERSION}
-    NIKKI_TEST_RELEASE_VERSION_STRING="${NIKKI_RELEASE_VERSION}")
+    NIKKI_TEST_RELEASE_VERSION_STRING="${NIKKI_RELEASE_VERSION}"
+    $<$<BOOL:${NIKKI_WASM_POINTER_SIZE}>:NIKKI_TEST_WASM_POINTER_SIZE=${NIKKI_WASM_POINTER_SIZE}>)
 add_executable(test_nikki_profile api/profile_test.cpp)
 add_executable(test_nikki_abi_guard api/abi_guard_test.cpp)
 add_executable(test_nikki_non_conformant_warning

@@ -27,6 +27,27 @@ EM_JS(int, nikki_read_adapter_info,
         if (!info)
             return 0;
 
+        // EM_JS receives wasm64 pointers as BigInt. Heap/string helpers need
+        // exact Number addresses, not bitwise shifts that truncate to 32 bits.
+        function heap_address(pointer, size, alignment)
+        {
+            var address = Number(pointer);
+            if (typeof pointer === "number" && address < 0 && address >= -0x80000000)
+                address += 0x100000000; // wasm32 i32 arguments may be signed.
+            if (!Number.isSafeInteger(address) || address < 0 || address % alignment !== 0
+                || address > HEAPU8.length - size)
+                throw new RangeError("invalid adapter info address");
+            return address;
+        }
+        // Validate all outputs before writing any of them. Leave the opaque
+        // adapter handle unchanged: getJsObject() uses it as an object key.
+        vendor = heap_address(vendor, vendor_size, 1);
+        architecture = heap_address(architecture, architecture_size, 1);
+        device = heap_address(device, device_size, 1);
+        description = heap_address(description, description_size, 1);
+        subgroup_min_size = heap_address(subgroup_min_size, 4, 4);
+        subgroup_max_size = heap_address(subgroup_max_size, 4, 4);
+
         stringToUTF8(info.vendor || "", vendor, vendor_size);
         stringToUTF8(info.architecture || "", architecture, architecture_size);
         stringToUTF8(info.device || "", device, device_size);
@@ -34,8 +55,8 @@ EM_JS(int, nikki_read_adapter_info,
 
         var subgroup_min = Number(info.subgroupMinSize);
         var subgroup_max = Number(info.subgroupMaxSize);
-        HEAPU32[subgroup_min_size >> 2] = Number.isFinite(subgroup_min) && subgroup_min >= 0 ? subgroup_min : 0;
-        HEAPU32[subgroup_max_size >> 2] = Number.isFinite(subgroup_max) && subgroup_max >= 0 ? subgroup_max : 0;
+        HEAPU32[subgroup_min_size / 4] = Number.isFinite(subgroup_min) && subgroup_min >= 0 ? subgroup_min : 0;
+        HEAPU32[subgroup_max_size / 4] = Number.isFinite(subgroup_max) && subgroup_max >= 0 ? subgroup_max : 0;
         return info.isFallbackAdapter ? 2 : 1;
     }
     catch (error)
@@ -76,7 +97,15 @@ EM_JS(int, nikki_read_subgroup_matrix_configs,
         };
         var count = matrix_configs.length;
         var write_count = Math.min(count, capacity);
-        var offset = configs >> 2;
+        // Keep the adapter's opaque object key, but convert the output
+        // address before arithmetic. Never narrow a wasm64 address with >>.
+        var address = Number(configs);
+        if (typeof configs === "number" && address < 0 && address >= -0x80000000)
+            address += 0x100000000;
+        if (!Number.isSafeInteger(address) || address < 0 || address % 4 !== 0
+            || address > HEAPU8.length - write_count * 20)
+            throw new RangeError("invalid subgroup matrix address");
+        var offset = address / 4;
         for (var i = 0; i < write_count; i++)
         {
             var config = matrix_configs[i];
