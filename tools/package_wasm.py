@@ -26,15 +26,16 @@ def main():
     versions = load_versions(root / "CMakeLists.txt")
     expected = ["lib/libnikki.a", "lib/cmake/nikki/nikkiConfig.cmake",
                 "lib/cmake/nikki/nikkiConfigVersion.cmake", "include/vulkan/vulkan.h",
-                "include/nikki/version.h", "LICENSE.txt", "THIRD_PARTY_NOTICES.md",
+                "LICENSE.txt", "THIRD_PARTY_NOTICES.md",
                 "share/nikki/ports/" + versions["NIKKI_EMDAWNWEBGPU_PORT_FILENAME"],
                 "share/nikki/ports/webgpu_immediates.externs.js"]
     for name in expected:
         if not (stage / name).is_file():
             raise SystemExit(f"missing package input: {name}")
-    header = (stage / "include/nikki/version.h").read_text()
-    if f'#define NIKKI_RELEASE_VERSION_STRING "{args.version}"' not in header:
-        raise SystemExit("installed driver version does not match release version")
+    config = (stage / "lib/cmake/nikki/nikkiConfig.cmake").read_text()
+    release_versions = re.findall(r'^set\(nikki_RELEASE_VERSION "([^"]*)"\)$', config, re.MULTILINE)
+    if release_versions != [args.version]:
+        raise SystemExit("installed package version does not match release version")
     libraries = list(stage.glob("lib/nikki/*.a"))
     if not libraries or not any("SPIRV-Tools" in path.name for path in libraries) or not any("tint" in path.name for path in libraries):
         raise SystemExit("missing Tint/SPIRV-Tools link closure")

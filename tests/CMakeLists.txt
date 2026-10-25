@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 add_executable(test_nikki_compute runtime/compute_test.cpp)
+target_compile_definitions(test_nikki_compute PRIVATE
+    NIKKI_TEST_RELEASE_VERSION=${NIKKI_RELEASE_VERSION}
+    NIKKI_TEST_RELEASE_VERSION_STRING="${NIKKI_RELEASE_VERSION}")
 add_executable(test_nikki_profile api/profile_test.cpp)
 add_executable(test_nikki_abi_guard api/abi_guard_test.cpp)
 add_executable(test_nikki_non_conformant_warning
@@ -41,8 +44,7 @@ nikki_configure_target(nikki_translator_header_compile)
 
 foreach(nikki_test_target IN LISTS nikki_test_targets)
     target_include_directories(${nikki_test_target} PRIVATE
-        "${NIKKI_DAWN_SOURCE_DIR}/third_party/vulkan-headers/src/include"
-        "${NIKKI_GENERATED_INCLUDE_DIR}")
+        "${NIKKI_DAWN_SOURCE_DIR}/third_party/vulkan-headers/src/include")
 endforeach()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")

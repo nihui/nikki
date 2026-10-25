@@ -27,7 +27,7 @@ sysroot by default, so `CMAKE_PREFIX_PATH` alone is not sufficient.
 
 The package includes `lib/libnikki.a`, the complete reachable static link
 closure (Tint, SPIRV-Tools, Dawn utilities and Abseil), Vulkan headers,
-`nikki/version.h`, the pinned Emdawnwebgpu remote port, Closure externs,
+the pinned Emdawnwebgpu remote port, Closure externs,
 and relocatable CMake package files. No nikki/Dawn source or producer build
 tree is needed. The remote port downloads its pinned WebGPU runtime on the
 first link, so an uncached consumer still needs network access. This is not

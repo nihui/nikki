@@ -73,8 +73,6 @@ install(DIRECTORY
     "${NIKKI_DAWN_SOURCE_DIR}/third_party/vulkan-headers/src/include/vulkan"
     "${NIKKI_DAWN_SOURCE_DIR}/third_party/vulkan-headers/src/include/vk_video"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-install(FILES "${NIKKI_GENERATED_INCLUDE_DIR}/nikki/version.h"
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/nikki")
 install(FILES "${NIKKI_EMDAWNWEBGPU_PORT}" "${NIKKI_CLOSURE_EXTERNS}"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/nikki/ports")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.txt"

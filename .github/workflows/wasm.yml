@@ -93,6 +93,7 @@ jobs:
       - name: Install and package the complete SDK
         run: |
           cmake --install build-wasm --prefix "$PWD/stage-wasm"
+          test ! -e stage-wasm/include/nikki/version.h
           python3 tools/package_wasm.py --stage stage-wasm --output release \
             --version "${{ steps.version.outputs.value }}"
 

@@ -3,7 +3,6 @@
 
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
-#include <nikki/version.h>
 
 #include <math.h>
 #include <stddef.h>
@@ -270,10 +269,12 @@ int main()
         fprintf(stderr, "unexpected physical device version %u\n", physical_device_properties.apiVersion);
         return 1;
     }
-    if (physical_device_properties.driverVersion != VK_MAKE_VERSION(NIKKI_DRIVER_VERSION_MAJOR, NIKKI_DRIVER_VERSION_MINOR, NIKKI_DRIVER_VERSION_PATCH))
+    const uint32_t expected_driver_version = VK_MAKE_VERSION(NIKKI_TEST_RELEASE_VERSION / 10000 - 2000,
+                                                             NIKKI_TEST_RELEASE_VERSION / 100 % 100, NIKKI_TEST_RELEASE_VERSION % 100);
+    if (physical_device_properties.driverVersion != expected_driver_version)
     {
         fprintf(stderr, "unexpected nikki driver version %u for release %s\n",
-                physical_device_properties.driverVersion, NIKKI_RELEASE_VERSION_STRING);
+                physical_device_properties.driverVersion, NIKKI_TEST_RELEASE_VERSION_STRING);
         return 1;
     }
     if (!strstr(physical_device_properties.deviceName, "experimental")
@@ -559,7 +560,7 @@ int main()
     }
     if (!strstr(driver_properties.driverName, "experimental")
         || !strstr(driver_properties.driverName, "non-conformant")
-        || !strstr(driver_properties.driverInfo, NIKKI_RELEASE_VERSION_STRING)
+        || !strstr(driver_properties.driverInfo, NIKKI_TEST_RELEASE_VERSION_STRING)
         || !strstr(driver_properties.driverInfo, "experimental")
         || !strstr(driver_properties.driverInfo, "non-conformant")
         || driver_properties.conformanceVersion.major != 0
