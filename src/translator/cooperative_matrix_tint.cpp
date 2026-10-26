@@ -594,6 +594,7 @@ static int scalarize_packed_cooperative_matrix_backing(
     }
 
     tint::core::ir::Builder builder(module);
+    tint::core::ir::Function* unpack_f16_helpers[2] = {nullptr, nullptr};
     std::unordered_map<tint::core::ir::Access*, ScalarizedAccess> rewritten;
     std::function<int(tint::core::ir::Access*)> rewrite_access = [&](tint::core::ir::Access* access) -> int {
         if (rewritten.count(access) != 0)
@@ -800,7 +801,29 @@ static int scalarize_packed_cooperative_matrix_backing(
                         const tint::core::type::Type* vector_type = item.scalar_count == 4
                                                                         ? (const tint::core::type::Type*)module.Types().vec4h()
                                                                         : (const tint::core::type::Type*)module.Types().vec2h();
-                        unpacked = builder.Bitcast(vector_type, unpacked)->Result();
+                        // Keep the bitcast at runtime: folding arbitrary packed
+                        // bits into f16 constants can create NaN/Inf literals,
+                        // which WGSL deliberately cannot represent. A user
+                        // function parameter is a runtime expression even when
+                        // its caller passes a constant. Use integer arguments
+                        // so all original payload bits reach the bitcast intact.
+                        const tint::core::type::Type* bits_type = item.scalar_count == 4
+                            ? (const tint::core::type::Type*)module.Types().vec2u()
+                            : (const tint::core::type::Type*)module.Types().u32();
+                        auto*& unpack_f16 = unpack_f16_helpers[item.scalar_count == 4 ? 1 : 0];
+                        if (!unpack_f16)
+                        {
+                            unpack_f16 = builder.Function("nikki_unpack_f16", vector_type);
+                            auto* bits = builder.FunctionParam("bits", bits_type);
+                            unpack_f16->SetParams({bits});
+                            builder.Append(unpack_f16->Block(), [&]() {
+                                auto* halves = builder.Bitcast(vector_type, bits)->Result();
+                                builder.Return(unpack_f16, halves);
+                            });
+                        }
+                        if (unpacked->Type() != bits_type)
+                            unpacked = builder.Bitcast(bits_type, unpacked)->Result();
+                        unpacked = builder.Call(unpack_f16, unpacked)->Result();
                     }
                     for (uint32_t k = 0; k < item.scalar_count; k++)
                     {
@@ -1230,13 +1253,23 @@ static int emulate_f16_f32_cooperative_matrix_conversions(
     return 0;
 }
 
+struct CooperativeMatrixBinaryScratch
+{
+    tint::core::ir::Var* lhs = nullptr;
+    tint::core::ir::Var* rhs = nullptr;
+    uint32_t capacity = 0;
+};
+
+using CooperativeMatrixBinaryScratchMap =
+    std::unordered_map<const tint::core::type::Type*, CooperativeMatrixBinaryScratch>;
+
 // WGSL has scalar/matrix arithmetic but no element-wise matrix/matrix operators.
 // Exchange complete matrices through workgroup memory, then distribute scalar
 // arithmetic across the subgroup. Each subgroup owns a disjoint scratch region.
 static int emulate_cooperative_matrix_binary(
     tint::core::ir::Module& module, tint::core::ir::UserCall* call,
     CooperativeMatrixMarker marker, const CooperativeMatrixLegalization& info,
-    uint32_t subgroup_size)
+    uint32_t subgroup_size, CooperativeMatrixBinaryScratchMap& scratch_by_type)
 {
     const tint::core::type::SubgroupMatrix* matrix =
         call->Result()->Type()->As<tint::core::type::SubgroupMatrix>();
@@ -1295,13 +1328,31 @@ static int emulate_cooperative_matrix_binary(
     auto* subgroup = cooperative_matrix_compute_builtin(
         module, builder, compute, tint::core::BuiltinValue::kSubgroupId,
         "nikki_subgroup_id");
-    const auto* array_type = module.Types().array(matrix->Type(), (uint32_t)scratch_count);
-    auto* lhs_scratch = builder.Var("nikki_matrix_binary_lhs",
-        module.Types().ptr<tint::core::AddressSpace::kWorkgroup>(array_type));
-    auto* rhs_scratch = builder.Var("nikki_matrix_binary_rhs",
-        module.Types().ptr<tint::core::AddressSpace::kWorkgroup>(array_type));
-    module.root_block->Append(lhs_scratch);
-    module.root_block->Append(rhs_scratch);
+    // All accepted operations are workgroup-uniform and end with a barrier.
+    // Reuse one pair per scalar type instead of allocating two arrays per
+    // operation. Different shapes use the maximum required capacity; existing
+    // accesses retain their scalar result types when the root arrays grow.
+    CooperativeMatrixBinaryScratch& scratch = scratch_by_type[matrix->Type()];
+    if (scratch.capacity < scratch_count)
+    {
+        const auto* array_type = module.Types().array(matrix->Type(), (uint32_t)scratch_count);
+        const auto* pointer_type = module.Types().ptr<tint::core::AddressSpace::kWorkgroup>(array_type);
+        if (!scratch.lhs)
+        {
+            scratch.lhs = builder.Var("nikki_matrix_binary_lhs", pointer_type);
+            scratch.rhs = builder.Var("nikki_matrix_binary_rhs", pointer_type);
+            module.root_block->Append(scratch.lhs);
+            module.root_block->Append(scratch.rhs);
+        }
+        else
+        {
+            scratch.lhs->Result()->SetType(pointer_type);
+            scratch.rhs->Result()->SetType(pointer_type);
+        }
+        scratch.capacity = (uint32_t)scratch_count;
+    }
+    auto* lhs_scratch = scratch.lhs;
+    auto* rhs_scratch = scratch.rhs;
     const auto operation = marker == CooperativeMatrixMarkerMatrixAdd
                                ? tint::core::BinaryOp::kAdd
                                : marker == CooperativeMatrixMarkerMatrixSubtract
@@ -1349,8 +1400,8 @@ static int emulate_cooperative_matrix_binary(
             tint::Vector<tint::core::ir::TemplateParameter, 1>{matrix},
             lhs_scratch->Result(), base, builder.Constant(false),
             builder.Constant(tint::core::u32(matrix->Columns())));
-        // Prevent a subsequent loop iteration from overwriting scratch while
-        // another lane is still loading the result.
+        // Prevent the next binary operation from reusing scratch while
+        // another lane is still loading this result.
         builder.Call(module.Types().void_(), tint::core::BuiltinFn::kWorkgroupBarrier);
     });
     call->Destroy();
@@ -1493,6 +1544,7 @@ int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
     size_t restored_muladd_count = 0;
     size_t restored_convert_count = 0;
     size_t restored_matrix_binary_count = 0;
+    CooperativeMatrixBinaryScratchMap binary_scratch_by_type;
     size_t restored_scalar_add_count = 0;
     size_t restored_scalar_subtract_count = 0;
     size_t restored_scalar_multiply_count = 0;
@@ -1673,7 +1725,7 @@ int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
                  || marker == CooperativeMatrixMarkerMatrixSubtract
                  || marker == CooperativeMatrixMarkerMatrixMultiply)
         {
-            if (emulate_cooperative_matrix_binary(module, call, marker, info, subgroup_size) != 0)
+            if (emulate_cooperative_matrix_binary(module, call, marker, info, subgroup_size, binary_scratch_by_type) != 0)
                 return -1;
             restored_matrix_binary_count++;
         }

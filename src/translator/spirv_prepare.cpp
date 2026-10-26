@@ -125,6 +125,9 @@ int specialize_spirv(std::vector<uint32_t>& spirv, const VkSpecializationInfo* i
     optimizer.SetMessageConsumer([](spv_message_level_t, const char*, const spv_position_t& position, const char* message) {
         log_error("SPIR-V optimizer word=%zu: %s", position.index, message ? message : "");
     });
+    // Entry-point selection has removed other roots. Remove their private call
+    // trees before any legalization counts operations or examines scalar types.
+    optimizer.RegisterPass(spvtools::CreateEliminateDeadFunctionsPass());
     if (!values.empty())
         optimizer.RegisterPass(spvtools::CreateSetSpecConstantDefaultValuePass(values));
     optimizer.RegisterPass(spvtools::CreateFreezeSpecConstantValuePass());

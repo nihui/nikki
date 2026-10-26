@@ -349,6 +349,279 @@ int check(const char* name, const Fixture& fixture, bool reject = false)
     return 0;
 }
 
+int translate_production(std::vector<uint32_t> words, const char* entry_point, nikki_detail::TranslationResult& result, bool matrix_features = true)
+{
+    nikki_detail::TranslationInput input{};
+    input.spirv = std::move(words);
+    input.entry_point = entry_point;
+    input.shader_profile.shader_f16_enabled = true;
+    input.shader_profile.subgroup_enabled = matrix_features;
+    input.shader_profile.cooperative_matrix_enabled = matrix_features;
+    input.shader_profile.packed_integer_dot_enabled = matrix_features;
+    input.shader_profile.subgroup_default_size = 32;
+    input.shader_profile.max_uniform_buffer_binding_size = 65536;
+    input.translator = std::make_shared<nikki_detail::TranslatorInstanceState>();
+    input.translator->wgsl_allowed_features = tint::wgsl::AllowedFeatures::Everything();
+    input.descriptor_layout.push_back({0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT});
+    return nikki_detail::translate_shader(input, result) == 0 ? 0 : 1;
+}
+
+size_t occurrences(const std::string& source, const std::string& text)
+{
+    size_t count = 0;
+    for (size_t p = 0; (p = source.find(text, p)) != std::string::npos; p += text.size())
+        count++;
+    return count;
+}
+
+bool replace_once(std::string& source, const std::string& from, const std::string& to)
+{
+    const size_t p = source.find(from);
+    if (p == std::string::npos)
+        return false;
+    source.replace(p, from.size(), to);
+    return true;
+}
+
+int production_fixture(const char* name, const std::string& assembly, const char* entry_point,
+                       nikki_detail::TranslationResult& result, bool matrix_features = true)
+{
+    fprintf(stderr, "cooperative_matrix_test: %s\n", name);
+    spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_1);
+    tools.SetMessageConsumer([](spv_message_level_t, const char*, const spv_position_t& position, const char* message) {
+        fprintf(stderr, "SPIR-V at %zu:%zu: %s\n", position.line, position.column, message);
+    });
+    std::vector<uint32_t> words;
+    if (!tools.Assemble(assembly, &words) || !tools.Validate(words))
+        return 1;
+    return translate_production(std::move(words), entry_point, result, matrix_features);
+}
+
+int check_packed_constants()
+{
+    int failures = 0;
+    struct PackedCase { uint32_t bits; unsigned backing; };
+    const PackedCase cases[] = {{0xffffffffu, 0}, {0x0000ffffu, 0}, {0x7c007c00u, 0}, {0u, 0},
+                                {0xffffffffu, 1}, {0x0000ffffu, 2}};
+    for (const PackedCase& test : cases)
+    {
+        const uint32_t bits = test.bits;
+        Fixture fixture;
+        fixture.unsigned_backing = test.backing == 0;
+        fixture.signed_backing = test.backing == 1;
+        fixture.ordinary_access = true;
+        std::string assembly = fixture.assembly();
+        const std::string literal = std::to_string(bits);
+        const std::string stored = test.backing == 0 ? "OpStore %other %sentinel"
+            : "%sentinel_cast = OpBitcast " + std::string(test.backing == 1 ? "%i32" : "%f32")
+                  + " %sentinel\nOpStore %other %sentinel_cast";
+        if (!replace_once(assembly, "%main = OpFunction", "%sentinel = OpConstant %u32 " + literal + "\n%main = OpFunction")
+            || !replace_once(assembly, "OpStore %other %ordinary", stored))
+            return 1;
+        nikki_detail::TranslationResult result;
+        if (production_fixture(("packed constant " + literal + " backing " + std::to_string(test.backing)).c_str(), assembly, "main", result) != 0)
+        {
+            failures++;
+            continue;
+        }
+        // This must be a runtime bit reinterpretation, not a non-finite f16
+        // constant or a numeric conversion that changes the NaN payload bits.
+        const std::string& source = result.wgsl;
+        const size_t helper = source.find("fn nikki_unpack_f16");
+        const size_t body = helper == std::string::npos ? helper : source.find('{', helper);
+        const size_t end = body == std::string::npos ? body : source.find('}', body);
+        const std::string implementation = body == std::string::npos || end == std::string::npos
+                                               ? "" : source.substr(body, end - body);
+        const std::string argument = test.backing == 0 ? literal + "u"
+            : "bitcast<u32>(bitcast<" + std::string(test.backing == 1 ? "i32" : "f32") + ">(" + literal + "u))";
+        const std::string expected_call = "nikki_unpack_f16(" + argument + ")";
+        const size_t call = source.find(expected_call);
+        const size_t let = call == std::string::npos ? call : source.rfind("let ", call);
+        const size_t equals = let == std::string::npos ? let : source.find(" = ", let);
+        const std::string value = let == std::string::npos || equals == std::string::npos
+                                     ? "" : source.substr(let + 4, equals - let - 4);
+        if (value.empty() || source.find("= " + value + ".x;") == std::string::npos
+            || source.find("= " + value + ".y;") == std::string::npos
+            || implementation.find("return bitcast<vec2<f16>>(bits);") == std::string::npos
+            || call == std::string::npos)
+        {
+            fprintf(stderr, "Packed constant bit-preservation path missing:\n%s\n", source.c_str());
+            failures++;
+        }
+    }
+    return failures;
+}
+
+int check_reused_scratch()
+{
+    Fixture fixture;
+    fixture.integer = true;
+    fixture.stride = 16;
+    fixture.binary = "OpIAdd";
+    fixture.workgroup_size = 128;
+    std::string assembly = fixture.assembly();
+    if (!replace_once(assembly, "OpCooperativeMatrixStoreKHR %ptr %combined",
+        "%sum2 = OpIAdd %c_type %combined %c1\n"
+        "%sum3 = OpIAdd %c_type %sum2 %c1\n"
+        "%sum4 = OpIAdd %c_type %sum3 %c1\n"
+        "%sum5 = OpIAdd %c_type %sum4 %c1\n"
+        "OpCooperativeMatrixStoreKHR %ptr %sum5"))
+        return 1;
+    nikki_detail::TranslationResult result;
+    if (production_fixture("five matrix additions reuse 8 KiB scratch", assembly, "main", result) != 0)
+        return 1;
+    const std::string& source = result.wgsl;
+    // Four subgroups * 256 i32 elements * two arrays = 8192 bytes, not
+    // five separate pairs (40960 bytes). Each reuse must complete its load
+    // before the following operation overwrites either scratch array.
+    if (occurrences(source, "var<workgroup>") != 2
+        || occurrences(source, "array<i32, 1024u>") != 2
+        || occurrences(source, "workgroupBarrier();") < 15
+        || occurrences(source, "subgroupMatrixLoad<subgroup_matrix_result<i32") != 5)
+    {
+        fprintf(stderr, "Scratch capacity/reuse or synchronization incorrect:\n%s\n", source.c_str());
+        return 1;
+    }
+    return 0;
+}
+
+int check_scratch_capacity()
+{
+    int failures = 0;
+    for (bool small_first : {true, false})
+    {
+        Fixture fixture;
+        fixture.integer = true;
+        fixture.stride = 16;
+        fixture.binary = "OpIAdd";
+        fixture.workgroup_size = 128;
+        std::string assembly = fixture.assembly();
+        if (!replace_once(assembly, "%main = OpFunction",
+            "%smallsize = OpConstant %u32 8\n"
+            "%small_a_type = OpTypeCooperativeMatrixKHR %i8 %scope %smallsize %smallsize %zero\n"
+            "%small_b_type = OpTypeCooperativeMatrixKHR %i8 %scope %smallsize %smallsize %one\n"
+            "%small_c_type = OpTypeCooperativeMatrixKHR %i32 %scope %smallsize %smallsize %two\n"
+            "%main = OpFunction"))
+            return 1;
+        const std::string small =
+            "%small_a = OpCooperativeMatrixLoadKHR %small_a_type %ptr %layout %stride\n"
+            "%small_b = OpCooperativeMatrixLoadKHR %small_b_type %ptr %layout %stride\n"
+            "%small_c = OpCompositeConstruct %small_c_type %initial\n"
+            "%small_c0 = OpCooperativeMatrixMulAddKHR %small_c_type %small_a %small_b %small_c MatrixASignedComponentsKHR|MatrixBSignedComponentsKHR|MatrixCSignedComponentsKHR|MatrixResultSignedComponentsKHR\n"
+            "%small_sum = OpIAdd %small_c_type %small_c0 %small_c0\n"
+            "OpCooperativeMatrixStoreKHR %ptr %small_sum %layout %store_stride\n";
+        const std::string anchor = small_first ? "%a = OpCooperativeMatrixLoadKHR" : "OpReturn";
+        if (!replace_once(assembly, anchor, small + anchor))
+            return 1;
+        nikki_detail::TranslationResult result;
+        if (production_fixture(small_first ? "scratch grows to maximum capacity" : "scratch does not shrink", assembly, "main", result) != 0)
+        {
+            failures++;
+            continue;
+        }
+        if (occurrences(result.wgsl, "var<workgroup>") != 2
+            || occurrences(result.wgsl, "array<i32, 1024u>") != 2
+            || occurrences(result.wgsl, "workgroupBarrier();") < 6)
+        {
+            fprintf(stderr, "Scratch must use max capacity, not sum or last size:\n%s\n", result.wgsl.c_str());
+            failures++;
+        }
+    }
+    return failures;
+}
+
+int check_selected_entries()
+{
+    Fixture fixture;
+    fixture.binary = "OpFAdd";
+    std::string assembly = fixture.assembly();
+    // A live packed-dot helper is shared by both matrix entry call trees.
+    // Entry selection must retain the helper for either matrix entry, but drop
+    // its markers and capabilities when selecting the plain entry below.
+    if (!replace_once(assembly, "OpCapability Shader\n",
+            "OpCapability Shader\nOpCapability DotProduct\nOpCapability DotProductInput4x8BitPacked\n")
+        || !replace_once(assembly, "OpMemoryModel", "OpExtension \"SPV_KHR_integer_dot_product\"\nOpMemoryModel")
+        || !replace_once(assembly, "%main = OpFunction", "%shared_func_type = OpTypeFunction %u32 %u32\n%main = OpFunction")
+        || !replace_once(assembly, "OpReturn",
+            "%shared_loaded = OpLoad %f32 %ptr\n%shared_bits = OpBitcast %u32 %shared_loaded\n"
+            "%shared_dot = OpFunctionCall %u32 %shared_helper %shared_bits\n"
+            "%shared_float = OpBitcast %f32 %shared_dot\nOpStore %ptr %shared_float\nOpReturn"))
+        return 1;
+    const std::string helper =
+        "%shared_helper = OpFunction %u32 None %shared_func_type\n"
+        "%helper_arg = OpFunctionParameter %u32\n%helper_entry = OpLabel\n"
+        "%helper_dot = OpUDot %u32 %helper_arg %helper_arg PackedVectorFormat4x8Bit\n"
+        "OpReturnValue %helper_dot\nOpFunctionEnd\n";
+    nikki_detail::TranslationResult result;
+    int failures = production_fixture("single-entry control with shared dot helper", assembly + helper, "main", result);
+    if (!replace_once(assembly, "OpExecutionMode %main",
+        "OpEntryPoint GLCompute %other_main \"other\"\n"
+        "OpExecutionMode %other_main LocalSize 64 1 1\nOpExecutionMode %main"))
+        return 1;
+    // Duplicate the body while renaming every local result and label. Both
+    // entries contain matrix markers, so selecting either must discard the
+    // other's markers as well as its compute entry point.
+    std::string other = assembly.substr(assembly.find("%main = OpFunction"));
+    std::unordered_set<std::string> locals;
+    std::istringstream lines(other);
+    std::string line;
+    while (std::getline(lines, line))
+    {
+        const size_t equals = line.find(" = ");
+        if (equals != std::string::npos && line[0] == '%')
+            locals.insert(line.substr(0, equals));
+    }
+    std::string renamed;
+    for (size_t p = 0; p < other.size();)
+    {
+        if (other[p] != '%')
+        {
+            renamed += other[p++];
+            continue;
+        }
+        size_t end = other.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_", p + 1);
+        if (end == std::string::npos)
+            end = other.size();
+        const std::string id = other.substr(p, end - p);
+        renamed += locals.count(id) ? "%other_" + id.substr(1) : id;
+        p = end;
+    }
+    assembly += renamed + helper;
+    for (const char* entry : {"main", "other"})
+    {
+        if (production_fixture((std::string("select matrix entry ") + entry).c_str(), assembly, entry, result) != 0)
+        {
+            failures++;
+            continue;
+        }
+        const uint32_t expected_size = std::string(entry) == "main" ? 32 : 64;
+        if (occurrences(result.wgsl, "@compute") != 1 || result.workgroup_size_x != expected_size
+            || occurrences(result.wgsl, "var<workgroup>") != 2
+            || result.wgsl.find("dot4U8Packed") == std::string::npos
+            || occurrences(result.wgsl, expected_size == 32 ? "array<f16, 256u>" : "array<f16, 512u>") != 2)
+        {
+            fprintf(stderr, "Wrong entry point or resource footprint selected:\n%s\n", result.wgsl.c_str());
+            failures++;
+        }
+    }
+    if (!replace_once(assembly, "OpExecutionMode %other_main",
+        "OpEntryPoint GLCompute %plain_main \"plain\"\n"
+        "OpExecutionMode %plain_main LocalSize 1 1 1\nOpExecutionMode %other_main"))
+        return 1;
+    assembly += "%plain_main = OpFunction %void None %function\n%plain_entry = OpLabel\nOpReturn\nOpFunctionEnd\n";
+    if (production_fixture("select plain entry without matrix/subgroup features", assembly, "plain", result, false) != 0)
+        failures++;
+    else if (occurrences(result.wgsl, "@compute") != 1 || result.uses_subgroup
+             || result.wgsl.find("subgroupMatrix") != std::string::npos)
+        failures++;
+    if (production_fixture("reject missing entry", assembly, "missing", result) == 0)
+    {
+        fprintf(stderr, "Missing entry point was not rejected\n");
+        failures++;
+    }
+    return failures;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -374,26 +647,18 @@ int main(int argc, char** argv)
             }
             std::vector<uint32_t> words(bytes.size() / sizeof(uint32_t));
             memcpy(words.data(), bytes.data(), bytes.size());
-            nikki_detail::TranslationInput input{};
-            input.spirv = std::move(words);
-            input.entry_point = "main";
-            input.shader_profile.shader_f16_enabled = true;
-            input.shader_profile.subgroup_enabled = true;
-            input.shader_profile.cooperative_matrix_enabled = true;
-            input.shader_profile.packed_integer_dot_enabled = true;
-            input.shader_profile.subgroup_default_size = 32;
-            input.shader_profile.max_uniform_buffer_binding_size = 65536;
-            input.translator = std::make_shared<nikki_detail::TranslatorInstanceState>();
-            input.translator->wgsl_allowed_features = tint::wgsl::AllowedFeatures::Everything();
-            input.descriptor_layout.push_back({0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT});
             nikki_detail::TranslationResult result;
-            failures += nikki_detail::translate_shader(input, result) == 0 ? 0 : 1;
+            failures += translate_production(std::move(words), "main", result);
             if (!result.wgsl.empty())
                 printf("// %s\n%s\n", argv[i], result.wgsl.c_str());
         }
         return failures ? 1 : 0;
     }
     int failures = nikki_detail::cooperative_matrix_translation_probe() ? 0 : 1;
+    failures += check_packed_constants();
+    failures += check_reused_scratch();
+    failures += check_scratch_capacity();
+    failures += check_selected_entries();
     Fixture f;
     failures += check("vkpeak FP16 single, packed float buffer", f);
     f.column_major = true;

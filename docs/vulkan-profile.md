@@ -29,8 +29,10 @@ saturating accumulation. Mixed-sign dots and saturation are lowered to exact
 integer operations, not advertised as hardware-accelerated instructions.
 
 Cooperative FP16 matrices can use packed 32-bit storage without changing its
-byte layout. Matrix/matrix element-wise addition, subtraction and multiplication
-use per-subgroup workgroup scratch; this fallback requires full subgroups and
+byte layout. Ordinary packed stores use runtime bitcasts so NaN/Inf half-bit
+patterns do not become forbidden WGSL constants. Matrix/matrix element-wise
+addition, subtraction and multiplication use per-subgroup workgroup scratch
+reused at the largest needed capacity for each scalar type; this fallback requires full subgroups and
 entry-point-level operations without conditional early returns. Unsupported
 control flow and explicit array strides that cannot be preserved fail explicitly.
 
