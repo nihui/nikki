@@ -2500,6 +2500,11 @@ int main()
 
         DestroyPipeline(device, integer_dot_pipeline, 0);
         DestroyShaderModule(device, integer_dot_shader, 0);
+        printf("[nikki-test] packed-integer-dot: PASS (12 GPU output cases)\n");
+    }
+    else
+    {
+        printf("[nikki-test] packed-integer-dot: SKIP (feature unavailable)\n");
     }
 
     VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
