@@ -24,6 +24,13 @@ if(TARGET nikki)
     set_property(TARGET test_nikki_integer_ranges
         PROPERTY FOLDER "nikki/tests")
 
+    add_executable(test_nikki_packed_integer_dot
+        translator/packed_integer_dot_test.cpp)
+    nikki_configure_target(test_nikki_packed_integer_dot)
+    target_link_libraries(test_nikki_packed_integer_dot PRIVATE nikki::static)
+    set_property(TARGET test_nikki_packed_integer_dot
+        PROPERTY FOLDER "nikki/tests")
+
     add_executable(test_nikki_cooperative_matrix_translation
         translator/cooperative_matrix_test.cpp)
     nikki_configure_target(test_nikki_cooperative_matrix_translation)
@@ -56,6 +63,15 @@ foreach(nikki_test_target IN LISTS nikki_test_targets)
 endforeach()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+    # Compiler-only regression tests need neither a WebGPU adapter nor a browser.
+    foreach(nikki_compiler_test IN ITEMS
+            test_nikki_cooperative_matrix_translation test_nikki_packed_integer_dot)
+        if(TARGET ${nikki_compiler_test})
+            target_link_options(${nikki_compiler_test} PRIVATE "-sENVIRONMENT=node")
+            set_target_properties(${nikki_compiler_test} PROPERTIES SUFFIX ".js")
+        endif()
+    endforeach()
+
     # Keep the compute test browser-loadable, rather than merely proving that
     # the Emscripten linker can produce a wasm file.
     target_link_options(test_nikki_compute PRIVATE
@@ -103,6 +119,11 @@ else()
         add_test(NAME test_nikki_integer_ranges COMMAND test_nikki_integer_ranges)
         set_tests_properties(test_nikki_integer_ranges PROPERTIES
             LABELS "nikki;translator;integer-ranges")
+    endif()
+    if(TARGET test_nikki_packed_integer_dot)
+        add_test(NAME test_nikki_packed_integer_dot COMMAND test_nikki_packed_integer_dot)
+        set_tests_properties(test_nikki_packed_integer_dot PROPERTIES
+            LABELS "nikki;translator;packed-integer-dot")
     endif()
     if(TARGET test_nikki_cooperative_matrix_translation)
         add_test(NAME test_nikki_cooperative_matrix_translation

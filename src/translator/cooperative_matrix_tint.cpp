@@ -3,6 +3,8 @@
 
 #include "translator_stages.h"
 
+#include "src/tint/lang/spirv/type/explicit_layout_array.h"
+
 namespace nikki_detail {
 
 using namespace tint::core::number_suffixes;
@@ -259,17 +261,31 @@ enum PackedCooperativeMatrixMemoryFormat
 {
     PackedCooperativeMatrixMemoryNone,
     PackedCooperativeMatrixMemoryF16Vec2U,
+    PackedCooperativeMatrixMemoryF16Scalar32,
     PackedCooperativeMatrixMemoryF32Vec4F,
     PackedCooperativeMatrixMemoryI32Vec4I,
     PackedCooperativeMatrixMemoryU32Vec4U
 };
 
-static bool packed_cooperative_matrix_vector(
+static bool packed_cooperative_matrix_is_f16(PackedCooperativeMatrixMemoryFormat format)
+{
+    return format == PackedCooperativeMatrixMemoryF16Vec2U
+           || format == PackedCooperativeMatrixMemoryF16Scalar32;
+}
+
+static uint32_t packed_cooperative_matrix_width(PackedCooperativeMatrixMemoryFormat format)
+{
+    return format == PackedCooperativeMatrixMemoryF16Scalar32 ? 2 : 4;
+}
+
+static bool packed_cooperative_matrix_element(
     const tint::core::type::Type* type,
     PackedCooperativeMatrixMemoryFormat format)
 {
     if (format == PackedCooperativeMatrixMemoryF16Vec2U)
         return is_vec2u(type);
+    if (format == PackedCooperativeMatrixMemoryF16Scalar32)
+        return type->IsAnyOf<tint::core::type::F32, tint::core::type::I32, tint::core::type::U32>();
     if (format == PackedCooperativeMatrixMemoryF32Vec4F)
         return is_vec4f(type);
     if (format == PackedCooperativeMatrixMemoryI32Vec4I)
@@ -284,7 +300,7 @@ static const tint::core::type::Type* packed_cooperative_matrix_scalar(
     tint::core::ir::Module& module,
     PackedCooperativeMatrixMemoryFormat format)
 {
-    if (format == PackedCooperativeMatrixMemoryF16Vec2U)
+    if (packed_cooperative_matrix_is_f16(format))
         return module.Types().f16();
     if (format == PackedCooperativeMatrixMemoryF32Vec4F)
         return module.Types().f32();
@@ -304,30 +320,41 @@ static const tint::core::type::Type* scalarize_packed_cooperative_matrix_type(
 
     std::unordered_map<const tint::core::type::Type*, const tint::core::type::Type*>::const_iterator cached = type_cache.find(type);
     if (cached != type_cache.end())
+    {
+        changed |= cached->second != type;
         return cached->second;
+    }
 
     const tint::core::type::Type* replacement = type;
     if (const tint::core::type::Array* array = type->As<tint::core::type::Array>())
     {
-        if (packed_cooperative_matrix_vector(array->ElemType(), format))
+        if (packed_cooperative_matrix_element(array->ElemType(), format))
         {
+            // A packed element must occupy exactly its scalar byte width.
+            // Do not silently discard SPIR-V padding while changing the view.
+            const tint::spirv::type::ExplicitLayoutArray* explicit_array = array->As<tint::spirv::type::ExplicitLayoutArray>();
+            if (explicit_array && !explicit_array->IsStrideImplicit())
+            {
+                failed = true;
+                return type;
+            }
             const std::optional<uint32_t> count = array->ConstantCount();
             if (count.has_value())
             {
-                if (count.value() > UINT32_MAX / 4)
+                if (count.value() > UINT32_MAX / packed_cooperative_matrix_width(format))
                 {
                     failed = true;
                     return type;
                 }
                 replacement = module.Types().array(
-                    packed_cooperative_matrix_scalar(module, format), count.value() * 4);
+                    packed_cooperative_matrix_scalar(module, format), count.value() * packed_cooperative_matrix_width(format));
             }
             else
             {
                 replacement = module.Types().runtime_array(
                     packed_cooperative_matrix_scalar(module, format));
             }
-            if (format == PackedCooperativeMatrixMemoryF16Vec2U)
+            if (packed_cooperative_matrix_is_f16(format))
                 module.properties.Add(tint::core::ir::Property::kAllow16BitFloats);
             changed = true;
         }
@@ -337,6 +364,12 @@ static const tint::core::type::Type* scalarize_packed_cooperative_matrix_type(
                 module, array->ElemType(), type_cache, format, changed, failed);
             if (element != array->ElemType())
             {
+                const tint::spirv::type::ExplicitLayoutArray* explicit_array = array->As<tint::spirv::type::ExplicitLayoutArray>();
+                if (explicit_array && !explicit_array->IsStrideImplicit())
+                {
+                    failed = true;
+                    return type;
+                }
                 const std::optional<uint32_t> count = array->ConstantCount();
                 if (!count.has_value())
                 {
@@ -357,9 +390,14 @@ static const tint::core::type::Type* scalarize_packed_cooperative_matrix_type(
             const tint::core::type::Type* member_type = scalarize_packed_cooperative_matrix_type(
                 module, member->Type(), type_cache, format, member_changed, failed);
             structure_changed |= member_changed;
+            // Keep the enclosing structure's alignment and fixed-size padding;
+            // otherwise arrays of these structures could acquire a new stride.
+            const tint::core::type::Array* member_array = member_type->As<tint::core::type::Array>();
+            const uint32_t member_size = member_array && !member_array->ConstantCount().has_value()
+                                             ? member_type->Size() : member->Size();
             tint::core::type::StructMember* new_member = module.Types().Get<tint::core::type::StructMember>(
-                member->Name(), member_type, member->Index(), member->Offset(), member_type->Align(),
-                member_type->Size(), member->Attributes());
+                member->Name(), member_type, member->Index(), member->Offset(), member->Align(),
+                member_size, member->Attributes());
             if (member->RowMajor())
                 new_member->SetRowMajor();
             if (member->HasMatrixStride())
@@ -368,7 +406,7 @@ static const tint::core::type::Type* scalarize_packed_cooperative_matrix_type(
         }
         if (structure_changed)
         {
-            const char* suffix = format == PackedCooperativeMatrixMemoryF16Vec2U   ? "_nikki_f16"
+            const char* suffix = packed_cooperative_matrix_is_f16(format)           ? "_nikki_f16"
                                  : format == PackedCooperativeMatrixMemoryF32Vec4F ? "_nikki_f32"
                                  : format == PackedCooperativeMatrixMemoryI32Vec4I ? "_nikki_i32"
                                                                                    : "_nikki_u32";
@@ -536,15 +574,27 @@ static int scalarize_packed_cooperative_matrix_backing(
         root_types[*it] = replacement;
     }
 
+    std::vector<tint::core::ir::CoreBuiltinCall*> array_lengths;
     std::vector<tint::core::ir::Access*> accesses;
     for (tint::core::ir::Instruction* instruction : module.Instructions())
     {
+        if (tint::core::ir::CoreBuiltinCall* call = instruction->As<tint::core::ir::CoreBuiltinCall>())
+        {
+            if (call->Func() == tint::core::BuiltinFn::kArrayLength
+                && roots.count(cooperative_matrix_memory_root(call->Args()[0])) != 0)
+            {
+                const tint::core::type::Array* array = memory_store_type(call->Args()[0]->Type())->As<tint::core::type::Array>();
+                if (array && packed_cooperative_matrix_element(array->ElemType(), format))
+                    array_lengths.push_back(call);
+            }
+        }
         tint::core::ir::Access* access = instruction->As<tint::core::ir::Access>();
         if (access && roots.count(cooperative_matrix_memory_root(access->Object())) != 0)
             accesses.push_back(access);
     }
 
     tint::core::ir::Builder builder(module);
+    tint::core::ir::Function* unpack_f16_helpers[2] = {nullptr, nullptr};
     std::unordered_map<tint::core::ir::Access*, ScalarizedAccess> rewritten;
     std::function<int(tint::core::ir::Access*)> rewrite_access = [&](tint::core::ir::Access* access) -> int {
         if (rewritten.count(access) != 0)
@@ -570,15 +620,15 @@ static int scalarize_packed_cooperative_matrix_backing(
             tint::core::ir::Value* index = access->Indices()[i];
             if (const tint::core::type::Array* array = current_type->As<tint::core::type::Array>())
             {
-                if (packed_cooperative_matrix_vector(array->ElemType(), format))
+                if (packed_cooperative_matrix_element(array->ElemType(), format))
                 {
                     const size_t remaining = access->Indices().size() - i - 1;
-                    if (remaining > 1)
+                    if (remaining > 1 || (remaining != 0 && format == PackedCooperativeMatrixMemoryF16Scalar32))
                         return -1;
 
                     const tint::core::type::Type* scalar_type = packed_cooperative_matrix_scalar(module, format);
                     const tint::core::type::Array* scalar_array = array->ConstantCount().has_value()
-                                                                      ? module.Types().array(scalar_type, array->ConstantCount().value() * 4)
+                                                                      ? module.Types().array(scalar_type, array->ConstantCount().value() * packed_cooperative_matrix_width(format))
                                                                       : module.Types().runtime_array(scalar_type);
                     if (prefix_indices.IsEmpty())
                     {
@@ -594,8 +644,8 @@ static int scalarize_packed_cooperative_matrix_backing(
                     }
 
                     builder.InsertBefore(access, [&]() {
-                        item.scalar_index = scale_array_index(builder, index, 4);
-                        item.scalar_count = 4;
+                        item.scalar_index = scale_array_index(builder, index, packed_cooperative_matrix_width(format));
+                        item.scalar_count = packed_cooperative_matrix_width(format);
                         if (remaining == 1)
                         {
                             const tint::core::ir::Constant* component = access->Indices()[i + 1]->As<tint::core::ir::Constant>();
@@ -664,7 +714,11 @@ static int scalarize_packed_cooperative_matrix_backing(
 
     for (std::unordered_map<tint::core::ir::Var*, const tint::core::type::Type*>::const_iterator it = root_types.begin();
          it != root_types.end(); ++it)
+    {
         it->first->Result()->SetType(it->second);
+        if (propagate_scalarized_memory_type(module, it->first->Result(), memory_store_type(it->second)) != 0)
+            return -1;
+    }
 
     for (size_t i = 0; i < accesses.size(); i++)
     {
@@ -673,10 +727,32 @@ static int scalarize_packed_cooperative_matrix_backing(
         if (item.scalar_count == 0)
             continue;
 
-        const tint::Vector<tint::core::ir::Usage, 4> usages = access->Result()->UsagesSorted();
-        for (size_t j = 0; j < usages.Length(); j++)
+        // Read and write operations may use a pointer alias rather than the
+        // access directly. Rewrite those operations before propagating types.
+        std::vector<tint::core::ir::Value*> aliases(1, access->Result());
+        std::unordered_set<tint::core::ir::Value*> visited_aliases;
+        std::vector<tint::core::ir::Instruction*> memory_operations;
+        for (size_t j = 0; j < aliases.size(); j++)
         {
-            tint::core::ir::Instruction* instruction = usages[j].instruction;
+            if (!visited_aliases.insert(aliases[j]).second)
+                continue;
+            for (const tint::core::ir::Usage& usage : aliases[j]->UsagesSorted())
+            {
+                tint::core::ir::Instruction* instruction = usage.instruction;
+                if (instruction->Is<tint::core::ir::Load>() || instruction->Is<tint::core::ir::Store>())
+                    memory_operations.push_back(instruction);
+                else if (tint::core::ir::Let* let = instruction->As<tint::core::ir::Let>())
+                    aliases.push_back(let->Result());
+                else if (tint::core::ir::CoreUnary* unary = instruction->As<tint::core::ir::CoreUnary>())
+                {
+                    if (unary->Op() == tint::core::UnaryOp::kAddressOf || unary->Op() == tint::core::UnaryOp::kIndirection)
+                        aliases.push_back(unary->Result());
+                }
+            }
+        }
+        for (size_t j = 0; j < memory_operations.size(); j++)
+        {
+            tint::core::ir::Instruction* instruction = memory_operations[j];
             if (tint::core::ir::Load* load = instruction->As<tint::core::ir::Load>())
             {
                 tint::core::ir::InstructionResult* result = load->DetachResult();
@@ -692,7 +768,7 @@ static int scalarize_packed_cooperative_matrix_backing(
                             scalar_memory_type, item.array_base, scalar_index);
                         components.Push(builder.Load(scalar)->Result());
                     }
-                    if (format == PackedCooperativeMatrixMemoryF16Vec2U)
+                    if (packed_cooperative_matrix_is_f16(format))
                     {
                         const tint::core::type::Type* vector_type = item.scalar_count == 4
                                                                         ? (const tint::core::type::Type*)module.Types().vec4h()
@@ -720,12 +796,34 @@ static int scalarize_packed_cooperative_matrix_backing(
                 builder.InsertBefore(store, [&]() {
                     const tint::core::type::Type* scalar_type = packed_cooperative_matrix_scalar(module, format);
                     tint::core::ir::Value* unpacked = store->From();
-                    if (format == PackedCooperativeMatrixMemoryF16Vec2U)
+                    if (packed_cooperative_matrix_is_f16(format))
                     {
                         const tint::core::type::Type* vector_type = item.scalar_count == 4
                                                                         ? (const tint::core::type::Type*)module.Types().vec4h()
                                                                         : (const tint::core::type::Type*)module.Types().vec2h();
-                        unpacked = builder.Bitcast(vector_type, unpacked)->Result();
+                        // Keep the bitcast at runtime: folding arbitrary packed
+                        // bits into f16 constants can create NaN/Inf literals,
+                        // which WGSL deliberately cannot represent. A user
+                        // function parameter is a runtime expression even when
+                        // its caller passes a constant. Use integer arguments
+                        // so all original payload bits reach the bitcast intact.
+                        const tint::core::type::Type* bits_type = item.scalar_count == 4
+                            ? (const tint::core::type::Type*)module.Types().vec2u()
+                            : (const tint::core::type::Type*)module.Types().u32();
+                        auto*& unpack_f16 = unpack_f16_helpers[item.scalar_count == 4 ? 1 : 0];
+                        if (!unpack_f16)
+                        {
+                            unpack_f16 = builder.Function("nikki_unpack_f16", vector_type);
+                            auto* bits = builder.FunctionParam("bits", bits_type);
+                            unpack_f16->SetParams({bits});
+                            builder.Append(unpack_f16->Block(), [&]() {
+                                auto* halves = builder.Bitcast(vector_type, bits)->Result();
+                                builder.Return(unpack_f16, halves);
+                            });
+                        }
+                        if (unpacked->Type() != bits_type)
+                            unpacked = builder.Bitcast(bits_type, unpacked)->Result();
+                        unpacked = builder.Call(unpack_f16, unpacked)->Result();
                     }
                     for (uint32_t k = 0; k < item.scalar_count; k++)
                     {
@@ -763,6 +861,19 @@ static int scalarize_packed_cooperative_matrix_backing(
         if (propagate_scalarized_memory_type(module, accesses[i]->Result(), store_type) != 0)
             return -1;
         accesses[i]->Result()->ReplaceAllUsesWith(item.replacement);
+    }
+
+    for (size_t i = 0; i < array_lengths.size(); i++)
+    {
+        tint::core::ir::CoreBuiltinCall* call = array_lengths[i];
+        tint::core::ir::InstructionResult* result = call->DetachResult();
+        builder.InsertBefore(call, [&]() {
+            tint::core::ir::CoreBuiltinCall* length = builder.Call(
+                module.Types().u32(), tint::core::BuiltinFn::kArrayLength, call->Args()[0]);
+            builder.BinaryWithResult(result, tint::core::BinaryOp::kDivide, length,
+                                     builder.Constant(tint::core::u32(packed_cooperative_matrix_width(format))));
+        });
+        call->Destroy();
     }
 
     for (size_t i = accesses.size(); i > 0; i--)
@@ -854,7 +965,7 @@ static int emulate_zero_stride_f16_cooperative_matrix_loads(
     for (size_t i = 0; i < memory_uses.size(); i++)
     {
         tint::core::ir::CoreBuiltinCall* call = memory_uses[i].call;
-        if (memory_uses[i].format != PackedCooperativeMatrixMemoryF16Vec2U || !call
+        if (!packed_cooperative_matrix_is_f16(memory_uses[i].format) || !call
             || call->Func() != tint::core::BuiltinFn::kSubgroupMatrixLoad)
             continue;
 
@@ -1142,6 +1253,161 @@ static int emulate_f16_f32_cooperative_matrix_conversions(
     return 0;
 }
 
+struct CooperativeMatrixBinaryScratch
+{
+    tint::core::ir::Var* lhs = nullptr;
+    tint::core::ir::Var* rhs = nullptr;
+    uint32_t capacity = 0;
+};
+
+using CooperativeMatrixBinaryScratchMap =
+    std::unordered_map<const tint::core::type::Type*, CooperativeMatrixBinaryScratch>;
+
+// WGSL has scalar/matrix arithmetic but no element-wise matrix/matrix operators.
+// Exchange complete matrices through workgroup memory, then distribute scalar
+// arithmetic across the subgroup. Each subgroup owns a disjoint scratch region.
+static int emulate_cooperative_matrix_binary(
+    tint::core::ir::Module& module, tint::core::ir::UserCall* call,
+    CooperativeMatrixMarker marker, const CooperativeMatrixLegalization& info,
+    uint32_t subgroup_size, CooperativeMatrixBinaryScratchMap& scratch_by_type)
+{
+    const tint::core::type::SubgroupMatrix* matrix =
+        call->Result()->Type()->As<tint::core::type::SubgroupMatrix>();
+    if (!matrix || call->Args().size() != 2
+        || call->Args()[0]->Type() != matrix || call->Args()[1]->Type() != matrix
+        || cooperative_matrix_is_8bit_placeholder(matrix, info)
+        || matrix->Columns() == 0 || matrix->Rows() > UINT32_MAX / matrix->Columns()
+        || subgroup_size == 0)
+    {
+        log_error("unsupported cooperative matrix binary operand type or subgroup size");
+        return -1;
+    }
+    tint::core::ir::Function* compute = 0;
+    for (auto* function : module.functions)
+    {
+        if (!function->IsCompute())
+            continue;
+        if (compute)
+            return -1;
+        compute = function;
+    }
+    // The fallback introduces workgroup barriers. Do not silently strengthen
+    // subgroup-uniform control flow to workgroup-uniform control flow.
+    if (!compute || !compute->WorkgroupSizeAsConst().has_value()
+        || call->Block() != compute->Block())
+    {
+        log_error("cooperative matrix binary fallback requires workgroup-uniform entry-point control flow");
+        return -1;
+    }
+    for (auto* instruction : module.Instructions())
+    {
+        auto* ret = instruction->As<tint::core::ir::Return>();
+        if (ret && ret->Func() == compute && ret->Block() != compute->Block())
+        {
+            log_error("cooperative matrix binary fallback does not support conditional entry-point returns");
+            return -1;
+        }
+    }
+    const auto workgroup_size = compute->WorkgroupSizeAsConst().value();
+    const uint64_t invocations = (uint64_t)workgroup_size[0] * workgroup_size[1] * workgroup_size[2];
+    if (invocations % subgroup_size != 0)
+    {
+        log_error("cooperative matrix binary fallback requires full subgroups");
+        return -1;
+    }
+    const uint32_t elements = matrix->Rows() * matrix->Columns();
+    const uint64_t subgroup_count = invocations / subgroup_size;
+    const uint64_t scratch_count = subgroup_count * elements;
+    if (!scratch_count || scratch_count > UINT32_MAX)
+        return -1;
+
+    tint::core::ir::Builder builder(module);
+    auto* lane = cooperative_matrix_compute_builtin(
+        module, builder, compute, tint::core::BuiltinValue::kSubgroupInvocationId,
+        "nikki_subgroup_invocation_id");
+    auto* subgroup = cooperative_matrix_compute_builtin(
+        module, builder, compute, tint::core::BuiltinValue::kSubgroupId,
+        "nikki_subgroup_id");
+    // All accepted operations are workgroup-uniform and end with a barrier.
+    // Reuse one pair per scalar type instead of allocating two arrays per
+    // operation. Different shapes use the maximum required capacity; existing
+    // accesses retain their scalar result types when the root arrays grow.
+    CooperativeMatrixBinaryScratch& scratch = scratch_by_type[matrix->Type()];
+    if (scratch.capacity < scratch_count)
+    {
+        const auto* array_type = module.Types().array(matrix->Type(), (uint32_t)scratch_count);
+        const auto* pointer_type = module.Types().ptr<tint::core::AddressSpace::kWorkgroup>(array_type);
+        if (!scratch.lhs)
+        {
+            scratch.lhs = builder.Var("nikki_matrix_binary_lhs", pointer_type);
+            scratch.rhs = builder.Var("nikki_matrix_binary_rhs", pointer_type);
+            module.root_block->Append(scratch.lhs);
+            module.root_block->Append(scratch.rhs);
+        }
+        else
+        {
+            scratch.lhs->Result()->SetType(pointer_type);
+            scratch.rhs->Result()->SetType(pointer_type);
+        }
+        scratch.capacity = (uint32_t)scratch_count;
+    }
+    auto* lhs_scratch = scratch.lhs;
+    auto* rhs_scratch = scratch.rhs;
+    const auto operation = marker == CooperativeMatrixMarkerMatrixAdd
+                               ? tint::core::BinaryOp::kAdd
+                               : marker == CooperativeMatrixMarkerMatrixSubtract
+                                     ? tint::core::BinaryOp::kSubtract
+                                     : tint::core::BinaryOp::kMultiply;
+    auto* result = call->DetachResult();
+    builder.InsertBefore(call, [&]() {
+        auto* base = builder.Multiply(subgroup, builder.Constant(tint::core::u32(elements)))->Result();
+        for (uint32_t operand = 0; operand < 2; operand++)
+        {
+            auto* scratch = operand == 0 ? lhs_scratch : rhs_scratch;
+            builder.Call(module.Types().void_(), tint::core::BuiltinFn::kSubgroupMatrixStore,
+                         scratch->Result(), base, call->Args()[operand], builder.Constant(false),
+                         builder.Constant(tint::core::u32(matrix->Columns())));
+        }
+        builder.Call(module.Types().void_(), tint::core::BuiltinFn::kWorkgroupBarrier);
+        const auto* scalar_pointer = module.Types().ptr(tint::core::AddressSpace::kWorkgroup,
+            matrix->Type(), tint::core::Access::kReadWrite);
+        const auto binary_element = [&](tint::core::ir::Value* index) {
+            auto* offset = builder.Add(base, index)->Result();
+            auto* lhs = builder.Access(scalar_pointer, lhs_scratch->Result(), offset);
+            auto* rhs = builder.Access(scalar_pointer, rhs_scratch->Result(), offset);
+            auto* lhs_value = builder.Load(lhs)->Result();
+            auto* rhs_value = builder.Load(rhs)->Result();
+            builder.Store(lhs, builder.Binary(operation, matrix->Type(), lhs_value, rhs_value));
+        };
+        for (uint64_t first = 0; first < elements; first += subgroup_size)
+        {
+            tint::core::ir::Value* index = first == 0 ? lane
+                : builder.Add(lane, builder.Constant(tint::core::u32((uint32_t)first)))->Result();
+            if (elements - first >= subgroup_size)
+                binary_element(index);
+            else
+            {
+                auto* branch = builder.If(builder.LessThan(index, builder.Constant(tint::core::u32(elements))));
+                builder.Append(branch->True(), [&]() {
+                    binary_element(index);
+                    builder.ExitIf(branch);
+                });
+            }
+        }
+        builder.Call(module.Types().void_(), tint::core::BuiltinFn::kWorkgroupBarrier);
+        builder.CallExplicitWithResult<tint::core::ir::CoreBuiltinCall>(
+            result, tint::core::BuiltinFn::kSubgroupMatrixLoad,
+            tint::Vector<tint::core::ir::TemplateParameter, 1>{matrix},
+            lhs_scratch->Result(), base, builder.Constant(false),
+            builder.Constant(tint::core::u32(matrix->Columns())));
+        // Prevent the next binary operation from reusing scratch while
+        // another lane is still loading this result.
+        builder.Call(module.Types().void_(), tint::core::BuiltinFn::kWorkgroupBarrier);
+    });
+    call->Destroy();
+    return 0;
+}
+
 int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
                                   const CooperativeMatrixLegalization& info,
                                   uint32_t subgroup_size)
@@ -1149,7 +1415,7 @@ int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
     const size_t expected_count = info.load_count + info.store_count + info.muladd_count
                                   + info.convert_count
                                   + info.scalar_add_count + info.scalar_subtract_count
-                                  + info.scalar_multiply_count;
+                                  + info.scalar_multiply_count + info.matrix_binary_count;
     if (expected_count == 0)
         return 0;
 
@@ -1228,6 +1494,9 @@ int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
         const char store_prefix[] = "nikki_coop_store_";
         const char muladd_prefix[] = "nikki_coop_muladd_";
         const char convert_prefix[] = "nikki_coop_convert_";
+        const char matrix_add_prefix[] = "nikki_coop_matrix_add_";
+        const char matrix_subtract_prefix[] = "nikki_coop_matrix_subtract_";
+        const char matrix_multiply_prefix[] = "nikki_coop_matrix_multiply_";
         const char scalar_add_prefix[] = "nikki_coop_scalar_add_";
         const char scalar_subtract_prefix[] = "nikki_coop_scalar_subtract_";
         const char scalar_multiply_prefix[] = "nikki_coop_scalar_multiply_";
@@ -1239,6 +1508,12 @@ int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
             marker = CooperativeMatrixMarkerMulAdd;
         else if (name.compare(0, sizeof(convert_prefix) - 1, convert_prefix) == 0)
             marker = CooperativeMatrixMarkerConvert;
+        else if (name.compare(0, sizeof(matrix_add_prefix) - 1, matrix_add_prefix) == 0)
+            marker = CooperativeMatrixMarkerMatrixAdd;
+        else if (name.compare(0, sizeof(matrix_subtract_prefix) - 1, matrix_subtract_prefix) == 0)
+            marker = CooperativeMatrixMarkerMatrixSubtract;
+        else if (name.compare(0, sizeof(matrix_multiply_prefix) - 1, matrix_multiply_prefix) == 0)
+            marker = CooperativeMatrixMarkerMatrixMultiply;
         else if (name.compare(0, sizeof(scalar_add_prefix) - 1, scalar_add_prefix) == 0)
             marker = CooperativeMatrixMarkerScalarAdd;
         else if (name.compare(0, sizeof(scalar_subtract_prefix) - 1, scalar_subtract_prefix) == 0)
@@ -1268,6 +1543,8 @@ int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
     size_t restored_store_count = 0;
     size_t restored_muladd_count = 0;
     size_t restored_convert_count = 0;
+    size_t restored_matrix_binary_count = 0;
+    CooperativeMatrixBinaryScratchMap binary_scratch_by_type;
     size_t restored_scalar_add_count = 0;
     size_t restored_scalar_subtract_count = 0;
     size_t restored_scalar_multiply_count = 0;
@@ -1310,6 +1587,16 @@ int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
                 memory_uses.push_back(CooperativeMatrixMemoryUse{
                     builtin_call, cooperative_matrix_memory_root(base), 4,
                     PackedCooperativeMatrixMemoryF16Vec2U, zero_stride});
+            }
+            else if (matrix_type && matrix_type->Type()->Is<tint::core::type::F16>()
+                     && memory_store_type(load->From()->Type())->IsAnyOf<tint::core::type::F32, tint::core::type::I32, tint::core::type::U32>())
+            {
+                uint32_t stride = 0;
+                const bool zero_stride = cooperative_matrix_constant_u32(call->Args()[2], stride)
+                                         && stride == 0;
+                memory_uses.push_back(CooperativeMatrixMemoryUse{
+                    builtin_call, cooperative_matrix_memory_root(base), 2,
+                    PackedCooperativeMatrixMemoryF16Scalar32, zero_stride});
             }
             else if (cooperative_matrix_is_8bit_placeholder(matrix_type, info)
                      && memory_store_type(load->From()->Type())->IsAnyOf<tint::core::type::I32, tint::core::type::U32>())
@@ -1384,6 +1671,11 @@ int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
                 memory_uses.push_back(CooperativeMatrixMemoryUse{
                     builtin_call, cooperative_matrix_memory_root(base), 4,
                     PackedCooperativeMatrixMemoryF16Vec2U, false});
+            else if (matrix_type && matrix_type->Type()->Is<tint::core::type::F16>()
+                     && memory_store_type(store->To()->Type())->IsAnyOf<tint::core::type::F32, tint::core::type::I32, tint::core::type::U32>())
+                memory_uses.push_back(CooperativeMatrixMemoryUse{
+                    builtin_call, cooperative_matrix_memory_root(base), 2,
+                    PackedCooperativeMatrixMemoryF16Scalar32, false});
             else if (cooperative_matrix_is_8bit_placeholder(matrix_type, info)
                      && memory_store_type(store->To()->Type())->IsAnyOf<tint::core::type::I32, tint::core::type::U32>())
                 memory_uses.push_back(CooperativeMatrixMemoryUse{
@@ -1429,6 +1721,14 @@ int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
             conversions.push_back(call);
             restored_convert_count++;
         }
+        else if (marker == CooperativeMatrixMarkerMatrixAdd
+                 || marker == CooperativeMatrixMarkerMatrixSubtract
+                 || marker == CooperativeMatrixMarkerMatrixMultiply)
+        {
+            if (emulate_cooperative_matrix_binary(module, call, marker, info, subgroup_size, binary_scratch_by_type) != 0)
+                return -1;
+            restored_matrix_binary_count++;
+        }
         else
         {
             if (call->Args().size() != 2 || !call->Result()->Type()->Is<tint::core::type::SubgroupMatrix>())
@@ -1460,6 +1760,7 @@ int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
     if (restored_load_count != info.load_count || restored_store_count != info.store_count
         || restored_muladd_count != info.muladd_count
         || restored_convert_count != info.convert_count
+        || restored_matrix_binary_count != info.matrix_binary_count
         || restored_scalar_add_count != info.scalar_add_count
         || restored_scalar_subtract_count != info.scalar_subtract_count
         || restored_scalar_multiply_count != info.scalar_multiply_count)
@@ -1475,6 +1776,10 @@ int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
 
     if (scalarize_packed_cooperative_matrix_backing(
             module, memory_uses, PackedCooperativeMatrixMemoryF16Vec2U)
+        != 0)
+        return -1;
+    if (scalarize_packed_cooperative_matrix_backing(
+            module, memory_uses, PackedCooperativeMatrixMemoryF16Scalar32)
         != 0)
         return -1;
     if (scalarize_packed_cooperative_matrix_backing(

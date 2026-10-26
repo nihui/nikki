@@ -1,0 +1,27 @@
+// Copyright 2026 nihui
+// SPDX-License-Identifier: Apache-2.0
+
+#version 450
+#extension GL_EXT_integer_dot_product : require
+layout(local_size_x = 1) in;
+layout(binding = 0) readonly buffer Input { uint data[]; } input_data;
+layout(binding = 1) buffer Output { uint data[]; } output_data;
+void main()
+{
+    uint a = input_data.data[0], b = input_data.data[1], positive = input_data.data[2];
+    output_data.data[0] = uint(dotPacked4x8EXT(int(a), int(b)));
+    output_data.data[1] = dotPacked4x8EXT(a, b);
+    output_data.data[2] = uint(dotPacked4x8EXT(int(a), b));
+    output_data.data[3] = uint(dotPacked4x8AccSatEXT(int(a), int(b), 2147483640));
+    output_data.data[4] = uint(dotPacked4x8AccSatEXT(int(a), int(positive), -2147483640));
+    output_data.data[5] = uint(dotPacked4x8AccSatEXT(int(a), int(b), -2147483647 - 1));
+    output_data.data[6] = dotPacked4x8AccSatEXT(a, b, 0xfffffff0u);
+    output_data.data[7] = dotPacked4x8AccSatEXT(a, b, 10u);
+    output_data.data[8] = uint(dotPacked4x8AccSatEXT(int(a), b, -2147483640));
+    output_data.data[9] = uint(dotPacked4x8AccSatEXT(int(a), b, 2147483647));
+    int sum = 2147483500;
+    for (int i = 0; i < 3; i++)
+        sum = dotPacked4x8AccSatEXT(int(a), int(b), sum);
+    output_data.data[10] = uint(sum);
+    output_data.data[11] = uint(dotPacked4x8AccSatEXT(int(positive), b, 2147483640));
+}

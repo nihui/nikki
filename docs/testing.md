@@ -10,6 +10,17 @@ fp16, subgroup, integer-dot and cooperative-matrix paths skip when Dawn does
 not expose the required feature. The default test build also compiles every
 Vulkan frontend module with `VK_USE_64_BIT_PTR_DEFINES=0`.
 
+Compiler-only regressions `test_nikki_cooperative_matrix_translation` and
+`test_nikki_packed_integer_dot` validate real SPIR-V through Tint to WGSL without
+requiring GPU feature support. The matrix test covers packed storage offsets,
+strides, nonfinite packed bit patterns, scratch reuse/capacity, entry-point
+selection and arithmetic; the dot test checks saturation against a wide-integer
+oracle. The GPU compute test additionally checks 12 packed-dot results, including
+all six opcodes, saturation boundaries and repeated accumulation. Both compiler
+tests also run under Node in the wasm32/wasm64 CI lanes. These checks do
+not replace execution on matrix-capable GPU hardware. The matrix executable
+optionally accepts specialized SPIR-V files and prints their generated WGSL.
+
 The compute test also checks scalar and `vec2` read/write/read sequences with
 matching and disjoint dynamic indices, untouched guard values, and adjacent
 loads ending at an odd-sized buffer's final float. Aliased `VkBuffer` handles

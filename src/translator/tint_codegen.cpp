@@ -5,6 +5,84 @@
 
 namespace nikki_detail {
 
+// Select the Vulkan pipeline's entry point before legalization records marker
+// counts or introduces entry-point-specific workgroup scratch. Tint's later
+// SingleEntryPoint pass is too late for those transformations.
+static int select_spirv_entry_point(std::vector<uint32_t>& spirv, const std::string& name)
+{
+    if (spirv.size() < 5 || spirv[0] != (uint32_t)spv::MagicNumber)
+        return -1;
+    uint32_t selected = 0;
+    size_t matches = 0;
+    for (size_t i = 5; i < spirv.size();)
+    {
+        const uint32_t count = spirv[i] >> 16;
+        if (count == 0 || i + count > spirv.size())
+            return -1;
+        if ((spv::Op)(spirv[i] & 0xffff) == spv::Op::OpEntryPoint && count >= 4
+            && spirv[i + 1] == (uint32_t)spv::ExecutionModel::GLCompute
+            && spirv_literal_string(&spirv[i + 3], count - 3) == name)
+        {
+            selected = spirv[i + 2];
+            matches++;
+        }
+        i += count;
+    }
+    if (matches != 1)
+    {
+        log_error("SPIR-V requires exactly one compute entry point named %s", name.c_str());
+        return -1;
+    }
+    std::vector<uint32_t> filtered(spirv.begin(), spirv.begin() + 5);
+    for (size_t i = 5; i < spirv.size();)
+    {
+        const uint32_t count = spirv[i] >> 16;
+        const spv::Op opcode = (spv::Op)(spirv[i] & 0xffff);
+        bool keep = true;
+        if (opcode == spv::Op::OpEntryPoint)
+            keep = count >= 4 && spirv[i + 1] == (uint32_t)spv::ExecutionModel::GLCompute
+                   && spirv[i + 2] == selected
+                   && spirv_literal_string(&spirv[i + 3], count - 3) == name;
+        else if (opcode == spv::Op::OpExecutionMode || opcode == spv::Op::OpExecutionModeId)
+            keep = count >= 3 && spirv[i + 1] == selected;
+        if (keep)
+            filtered.insert(filtered.end(), spirv.begin() + i, spirv.begin() + i + count);
+        i += count;
+    }
+    spirv.swap(filtered);
+    return 0;
+}
+
+// DCE removes unused types, but leaves their module-wide capability declarations.
+// Do not require matrix/Int8 support solely for a discarded entry point.
+static void prune_unused_matrix_declarations(std::vector<uint32_t>& spirv)
+{
+    bool matrix = false;
+    bool int8 = false;
+    for (size_t i = 5; i < spirv.size(); i += spirv[i] >> 16)
+    {
+        const uint32_t count = spirv[i] >> 16;
+        const spv::Op opcode = (spv::Op)(spirv[i] & 0xffff);
+        matrix |= opcode == spv::Op::OpTypeCooperativeMatrixKHR;
+        int8 |= opcode == spv::Op::OpTypeInt && count == 4 && spirv[i + 2] == 8;
+    }
+    std::vector<uint32_t> filtered(spirv.begin(), spirv.begin() + 5);
+    for (size_t i = 5; i < spirv.size();)
+    {
+        const uint32_t count = spirv[i] >> 16;
+        const spv::Op opcode = (spv::Op)(spirv[i] & 0xffff);
+        const bool unused_capability = opcode == spv::Op::OpCapability && count == 2
+            && ((!matrix && spirv[i + 1] == (uint32_t)spv::Capability::CooperativeMatrixKHR)
+                || (!int8 && spirv[i + 1] == (uint32_t)spv::Capability::Int8));
+        const bool unused_extension = !matrix && opcode == spv::Op::OpExtension
+            && spirv_literal_string(&spirv[i + 1], count - 1) == "SPV_KHR_cooperative_matrix";
+        if (!unused_capability && !unused_extension)
+            filtered.insert(filtered.end(), spirv.begin() + i, spirv.begin() + i + count);
+        i += count;
+    }
+    spirv.swap(filtered);
+}
+
 int translate_shader(const TranslationInput& input, TranslationResult& translated)
 try
 {
@@ -13,6 +91,8 @@ try
         return -1;
 
     std::vector<uint32_t> spirv = input.spirv;
+    if (select_spirv_entry_point(spirv, input.entry_point) != 0)
+        return -1;
     if (normalize_spirv(spirv) != 0)
     {
         log_error("SPIR-V normalization failed");
@@ -25,6 +105,7 @@ try
     specialization_info.pData = input.specialization.data.empty() ? 0 : input.specialization.data.data();
     if (specialize_spirv(spirv, &specialization_info) != 0)
         return -1;
+    prune_unused_matrix_declarations(spirv);
     if (legalize_storage_buffer_16bit_integer_spirv(spirv) != 0)
     {
         log_error("SPIR-V 16-bit integer storage legalization failed");
@@ -44,13 +125,13 @@ try
     }
     translated.workgroup_reshape_safe = can_reshape_workgroup(spirv);
     size_t packed_integer_dot_count = 0;
-    if (legalize_packed_integer_dot_spirv(spirv, packed_integer_dot_count) != 0)
+    bool uses_integer_dot = false;
+    if (legalize_packed_integer_dot_spirv(spirv, packed_integer_dot_count, &uses_integer_dot) != 0)
     {
         log_error("SPIR-V packed integer dot legalization failed");
         return -1;
     }
-    if (packed_integer_dot_count != 0
-        && !input.shader_profile.packed_integer_dot_enabled)
+    if (uses_integer_dot && !input.shader_profile.packed_integer_dot_enabled)
     {
         log_error("SPIR-V packed integer dot product requires VK_KHR_shader_integer_dot_product");
         return -1;

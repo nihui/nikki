@@ -15,13 +15,26 @@ global/instance/device scope and enabled-extension state. Unsupported image and
 graphics entry points are not exposed.
 
 `VK_KHR_driver_properties` reports conformance version `0.0.0.0`.
-`deviceName`, `driverName`, and `driverInfo` explicitly identify nikki as
-experimental and non-conformant.
+`driverName` is `nikki`, and `deviceName` prefixes the adapter name with
+`nikki: `. `driverInfo` and the startup warning retain the experimental,
+non-conformant status.
 
 Shader support includes ncnn's storage-buffer compute subset plus conditional
 fp16, subgroup, packed integer-dot and cooperative-matrix translation when the
 selected Dawn adapter and Tint path support the complete behavior. Unsupported
 SPIR-V is rejected; it is never silently approximated.
+
+Packed 4x8 integer dots support signed, unsigned and mixed-sign inputs, including
+saturating accumulation. Mixed-sign dots and saturation are lowered to exact
+integer operations, not advertised as hardware-accelerated instructions.
+
+Cooperative FP16 matrices can use packed 32-bit storage without changing its
+byte layout. Ordinary packed stores use runtime bitcasts so NaN/Inf half-bit
+patterns do not become forbidden WGSL constants. Matrix/matrix element-wise
+addition, subtraction and multiplication use per-subgroup workgroup scratch
+reused at the largest needed capacity for each scalar type; this fallback requires full subgroups and
+entry-point-level operations without conditional early returns. Unsupported
+control flow and explicit array strides that cannot be preserved fail explicitly.
 
 Command buffers use explicit initial, recording, executable, pending and
 invalid states. Recording errors are deferred to `vkEndCommandBuffer`, and
