@@ -1,5 +1,7 @@
 # nikki
 
+<img src="images/logo.svg" alt="nikki logo" width="128" height="128">
+
 nikki is an experimental implementation of a restricted subset of the Vulkan API over WebGPU.
 
 ## Experimental and non-conformant implementation
