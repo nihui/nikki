@@ -48,7 +48,7 @@ self.addEventListener("message", async (event) => {
                     const info = adapter.info || {};
                     // Match the public Vulkan name, including its 255-byte
                     // limit, rather than accepting the bridge's silent fallback.
-                    const device_name = "nikki experimental non-conformant: "
+                    const device_name = "nikki: "
                         + (info.device || info.architecture || "WebGPU");
                     adapter_device_names.push(new TextDecoder().decode(new TextEncoder().encode(device_name).slice(0, 255)));
                     adapter_info = [info.vendor, info.architecture, info.device, info.description]

@@ -220,6 +220,34 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
     if (void_type == 0)
         void_type = next_id++;
 
+    // GLSL commonly constructs int8 matrices through uint32 -> uint8 ->
+    // int8. Include the connected signed/unsigned 8-bit cast types, not just
+    // the type appearing in OpTypeCooperativeMatrixKHR.
+    bool added_component_type = true;
+    while (added_component_type)
+    {
+        added_component_type = false;
+        for (size_t i = 5; i < spirv.size(); i += spirv[i] >> 16)
+        {
+            const spv::Op opcode = (spv::Op)(spirv[i] & 0xffff);
+            if ((spirv[i] >> 16) != 4
+                || (opcode != spv::Op::OpBitcast && opcode != spv::Op::OpSConvert
+                    && opcode != spv::Op::OpUConvert)
+                || spirv[i + 3] >= result_types.size())
+                continue;
+            const uint32_t destination = spirv[i + 1];
+            const uint32_t source = result_types[spirv[i + 3]];
+            if (integer_type_widths[destination] != 8 || integer_type_widths[source] != 8)
+                continue;
+            if (cooperative_matrix_8bit_component_types.count(destination)
+                || cooperative_matrix_8bit_component_types.count(source))
+            {
+                added_component_type |= cooperative_matrix_8bit_component_types.insert(destination).second;
+                added_component_type |= cooperative_matrix_8bit_component_types.insert(source).second;
+            }
+        }
+    }
+
     std::unordered_map<uint32_t, uint32_t> cooperative_matrix_component_placeholders;
     std::vector<uint32_t> created_integer32_types;
     for (std::unordered_set<uint32_t>::const_iterator it = cooperative_matrix_8bit_component_types.begin();
@@ -235,6 +263,55 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
         cooperative_matrix_component_placeholders[*it] = placeholder;
     }
 
+    // Check actual ID operands, not raw instruction words (which can contain
+    // literals equal to IDs). A promoted scalar8 must not escape into operations
+    // whose interpretation depends on its original width, e.g. OpConvertUToF
+    // or signed comparisons of an unsigned8 value with the high bit set.
+    if (!cooperative_matrix_component_placeholders.empty())
+    {
+        struct Scalar8Uses
+        {
+            const std::vector<uint32_t>* result_types;
+            const std::unordered_map<uint32_t, uint32_t>* placeholders;
+            const std::unordered_set<uint32_t>* matrix_types;
+        } uses = {&result_types, &cooperative_matrix_component_placeholders, &cooperative_matrix_types};
+        spv_context context = spvContextCreate(SPV_ENV_UNIVERSAL_1_6);
+        const spv_result_t parsed = spvBinaryParse(
+            context, &uses, spirv.data(), spirv.size(), nullptr,
+            [](void* data, const spv_parsed_instruction_t* instruction) -> spv_result_t {
+                const Scalar8Uses& uses = *static_cast<Scalar8Uses*>(data);
+                const spv::Op opcode = (spv::Op)instruction->opcode;
+                const bool constructor = (opcode == spv::Op::OpCompositeConstruct
+                                          || opcode == spv::Op::OpConstantComposite)
+                                         && uses.matrix_types->count(instruction->type_id) != 0;
+                const bool cast = (opcode == spv::Op::OpSConvert || opcode == spv::Op::OpUConvert
+                                   || opcode == spv::Op::OpBitcast)
+                                  && uses.placeholders->count(instruction->type_id) != 0;
+                if (constructor || cast || opcode == spv::Op::OpName || opcode == spv::Op::OpDecorate)
+                    return SPV_SUCCESS;
+                for (uint16_t i = 0; i < instruction->num_operands; i++)
+                {
+                    const spv_parsed_operand_t& operand = instruction->operands[i];
+                    if (operand.type != SPV_OPERAND_TYPE_ID
+                        && operand.type != SPV_OPERAND_TYPE_SCOPE_ID
+                        && operand.type != SPV_OPERAND_TYPE_MEMORY_SEMANTICS_ID)
+                        continue;
+                    const uint32_t id = instruction->words[operand.offset];
+                    if (id < uses.result_types->size()
+                        && uses.placeholders->count((*uses.result_types)[id]) != 0)
+                    {
+                        log_error("unsupported consumer of scalar 8-bit cooperative matrix constructor value");
+                        return SPV_ERROR_INVALID_DATA;
+                    }
+                }
+                return SPV_SUCCESS;
+            }, nullptr);
+        spvContextDestroy(context);
+        if (parsed != SPV_SUCCESS)
+            return -1;
+    }
+
+    uint32_t narrow_shift_constants[2] = {0, 0};
     std::vector<CooperativeMatrixHelper> helpers;
     std::vector<uint32_t> instructions;
     instructions.reserve(spirv.size());
@@ -279,22 +356,36 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
                                        ? spirv[i + 2]
                                        : placeholder->second);
         }
-        else if ((opcode == spv::Op::OpSConvert || opcode == spv::Op::OpUConvert)
+        else if ((opcode == spv::Op::OpSConvert || opcode == spv::Op::OpUConvert
+                  || opcode == spv::Op::OpBitcast)
                  && word_count == 4
                  && cooperative_matrix_component_placeholders.count(spirv[i + 1]) != 0)
         {
+            const bool is_signed = signed_integer_types[spirv[i + 1]];
             const uint32_t placeholder = cooperative_matrix_component_placeholders[spirv[i + 1]];
             const uint32_t source_type = spirv[i + 3] < result_types.size() ? result_types[spirv[i + 3]] : 0;
-            if (source_type == 0 || integer_type_widths[source_type] != 32)
+            const auto source_placeholder = cooperative_matrix_component_placeholders.find(source_type);
+            const uint32_t promoted_source_type = source_placeholder == cooperative_matrix_component_placeholders.end()
+                                                      ? source_type : source_placeholder->second;
+            if (source_type == 0 || (integer_type_widths[source_type] != 32
+                                    && source_placeholder == cooperative_matrix_component_placeholders.end()))
                 return -1;
 
-            const spv::Op replacement_opcode = source_type == placeholder
-                                                   ? spv::Op::OpCopyObject
-                                                   : spv::Op::OpBitcast;
-            instructions.push_back((4u << 16) | (uint32_t)replacement_opcode);
-            instructions.push_back(placeholder);
-            instructions.push_back(spirv[i + 2]);
-            instructions.push_back(spirv[i + 3]);
+            // Promotion must retain 8-bit truncation, including sign extension
+            // after uint8 -> int8 bitcasts. A plain 32-bit copy is incorrect for
+            // values outside [-128, 127] / [0, 255].
+            uint32_t& shift = narrow_shift_constants[is_signed ? 1 : 0];
+            if (shift == 0)
+                shift = next_id++;
+            const uint32_t converted = next_id++;
+            const uint32_t shifted = next_id++;
+            instructions.insert(instructions.end(), {
+                (4u << 16) | (uint32_t)(promoted_source_type == placeholder ? spv::Op::OpCopyObject : spv::Op::OpBitcast),
+                placeholder, converted, spirv[i + 3],
+                (5u << 16) | (uint32_t)spv::Op::OpShiftLeftLogical,
+                placeholder, shifted, converted, shift,
+                (5u << 16) | (uint32_t)(is_signed ? spv::Op::OpShiftRightArithmetic : spv::Op::OpShiftRightLogical),
+                placeholder, spirv[i + 2], shifted, shift});
         }
         else if ((opcode == spv::Op::OpConstant || opcode == spv::Op::OpSpecConstant)
                  && word_count == 4
@@ -437,9 +528,9 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
 
             const bool lhs_is_matrix = cooperative_matrix_types.count(result_types[spirv[i + 3]]) != 0;
             const bool rhs_is_matrix = cooperative_matrix_types.count(result_types[spirv[i + 4]]) != 0;
-            if (lhs_is_matrix == rhs_is_matrix)
+            if (!lhs_is_matrix && !rhs_is_matrix)
             {
-                log_error("cooperative matrix binary operation requires one matrix and one scalar operand");
+                log_error("cooperative matrix binary operation requires at least one matrix operand");
                 return -1;
             }
             if (!lhs_is_matrix && (opcode == spv::Op::OpFSub || opcode == spv::Op::OpISub))
@@ -455,6 +546,19 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
                 marker = CooperativeMatrixMarkerScalarSubtract;
             else
                 marker = CooperativeMatrixMarkerScalarMultiply;
+
+            if (lhs_is_matrix && rhs_is_matrix)
+            {
+                if (opcode == spv::Op::OpMatrixTimesScalar
+                    || result_types[spirv[i + 3]] != spirv[i + 1]
+                    || result_types[spirv[i + 4]] != spirv[i + 1])
+                    return -1;
+                marker = marker == CooperativeMatrixMarkerScalarAdd
+                             ? CooperativeMatrixMarkerMatrixAdd
+                             : marker == CooperativeMatrixMarkerScalarSubtract
+                                   ? CooperativeMatrixMarkerMatrixSubtract
+                                   : CooperativeMatrixMarkerMatrixMultiply;
+            }
 
             const uint32_t matrix_value = lhs_is_matrix ? spirv[i + 3] : spirv[i + 4];
             const uint32_t scalar_value = lhs_is_matrix ? spirv[i + 4] : spirv[i + 3];
@@ -472,7 +576,9 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
             instructions.push_back(matrix_value);
             instructions.push_back(scalar_value);
 
-            if (marker == CooperativeMatrixMarkerScalarAdd)
+            if (lhs_is_matrix && rhs_is_matrix)
+                info.matrix_binary_count++;
+            else if (marker == CooperativeMatrixMarkerScalarAdd)
                 info.scalar_add_count++;
             else if (marker == CooperativeMatrixMarkerScalarSubtract)
                 info.scalar_subtract_count++;
@@ -498,6 +604,26 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
         }
         else
         {
+            // Only constructor constants and casts are promoted. In particular,
+            // widening an 8-bit add/multiply would lose its wrapping semantics.
+            const bool unsupported_result = spirv_instruction_has_result_type(opcode)
+                                            && word_count >= 3
+                                            && cooperative_matrix_component_placeholders.count(spirv[i + 1]) != 0;
+            const bool unsupported_conversion = (opcode == spv::Op::OpSConvert || opcode == spv::Op::OpUConvert
+                                                 || opcode == spv::Op::OpBitcast)
+                                                && word_count == 4 && spirv[i + 3] < result_types.size()
+                                                && cooperative_matrix_component_placeholders.count(result_types[spirv[i + 3]]) != 0;
+            const bool unsupported_pointer = opcode == spv::Op::OpTypePointer && word_count == 4
+                                             && cooperative_matrix_component_placeholders.count(spirv[i + 3]) != 0;
+            const bool unsupported_composite = (opcode == spv::Op::OpTypeVector || opcode == spv::Op::OpTypeArray
+                                                || opcode == spv::Op::OpTypeRuntimeArray)
+                                               && word_count >= 3
+                                               && cooperative_matrix_component_placeholders.count(spirv[i + 2]) != 0;
+            if (unsupported_result || unsupported_conversion || unsupported_pointer || unsupported_composite)
+            {
+                log_error("only scalar 8-bit constants and constructor casts are supported with cooperative matrices");
+                return -1;
+            }
             instructions.insert(instructions.end(), spirv.begin() + i, spirv.begin() + i + word_count);
         }
 
@@ -543,6 +669,12 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
             marker_name = "scalar_subtract";
         else if (helpers[i].marker == CooperativeMatrixMarkerScalarMultiply)
             marker_name = "scalar_multiply";
+        else if (helpers[i].marker == CooperativeMatrixMarkerMatrixAdd)
+            marker_name = "matrix_add";
+        else if (helpers[i].marker == CooperativeMatrixMarkerMatrixSubtract)
+            marker_name = "matrix_subtract";
+        else if (helpers[i].marker == CooperativeMatrixMarkerMatrixMultiply)
+            marker_name = "matrix_multiply";
         char name[96];
         snprintf(name, sizeof(name), "nikki_coop_%s_%u", marker_name, helpers[i].function);
         append_spirv_string_instruction(names, spv::Op::OpName, helpers[i].function, name);
@@ -561,6 +693,15 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
         declarations.push_back(type);
         declarations.push_back(32);
         declarations.push_back(type == integer32_types[1] ? 1 : 0);
+    }
+    for (uint32_t sign = 0; sign < 2; sign++)
+    {
+        if (narrow_shift_constants[sign] != 0)
+        {
+            declarations.insert(declarations.end(), {
+                (4u << 16) | (uint32_t)spv::Op::OpConstant,
+                integer32_types[sign], narrow_shift_constants[sign], 24});
+        }
     }
     for (size_t i = 0; i < helpers.size(); i++)
     {

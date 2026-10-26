@@ -236,7 +236,7 @@ void impl_get_physical_device_properties(VkPhysicalDevice physical_device, VkPhy
     properties->vendorID = physical_device_impl->vendor_id;
     properties->deviceID = physical_device_impl->device_id;
     properties->deviceType = physical_device_type(physical_device_impl->adapter_type);
-    const std::string device_name = "nikki experimental non-conformant: " + physical_device_impl->device_name;
+    const std::string device_name = "nikki: " + physical_device_impl->device_name;
     strncpy(properties->deviceName, device_name.c_str(), VK_MAX_PHYSICAL_DEVICE_NAME_SIZE - 1);
     properties->deviceName[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE - 1] = '\0';
 
@@ -421,7 +421,7 @@ void impl_get_physical_device_properties2(VkPhysicalDevice physical_device, VkPh
             VkPhysicalDeviceDriverProperties* driver = (VkPhysicalDeviceDriverProperties*)next;
             // VK_DRIVER_ID_NIKKI, added in Vulkan-Headers 1.4.366.
             driver->driverID = static_cast<VkDriverId>(33);
-            strncpy(driver->driverName, "nikki experimental non-conformant", VK_MAX_DRIVER_NAME_SIZE - 1);
+            strncpy(driver->driverName, "nikki", VK_MAX_DRIVER_NAME_SIZE - 1);
             driver->driverName[VK_MAX_DRIVER_NAME_SIZE - 1] = '\0';
             const std::string driver_info = "nikki " NIKKI_RELEASE_VERSION_STRING " experimental non-conformant; WebGPU backend: "
                                             + physical_device_impl->driver_name;

@@ -63,7 +63,10 @@ enum CooperativeMatrixMarker
     CooperativeMatrixMarkerConvert,
     CooperativeMatrixMarkerScalarAdd,
     CooperativeMatrixMarkerScalarSubtract,
-    CooperativeMatrixMarkerScalarMultiply
+    CooperativeMatrixMarkerScalarMultiply,
+    CooperativeMatrixMarkerMatrixAdd,
+    CooperativeMatrixMarkerMatrixSubtract,
+    CooperativeMatrixMarkerMatrixMultiply
 };
 
 struct CooperativeMatrixLegalization
@@ -83,10 +86,11 @@ struct CooperativeMatrixLegalization
     size_t scalar_add_count;
     size_t scalar_subtract_count;
     size_t scalar_multiply_count;
+    size_t matrix_binary_count;
     std::vector<ComponentTypeSubstitution> component_type_substitutions;
 
     CooperativeMatrixLegalization()
-        : load_count(0), store_count(0), muladd_count(0), convert_count(0), scalar_add_count(0), scalar_subtract_count(0), scalar_multiply_count(0)
+        : load_count(0), store_count(0), muladd_count(0), convert_count(0), scalar_add_count(0), scalar_subtract_count(0), scalar_multiply_count(0), matrix_binary_count(0)
     {
     }
 };
@@ -105,7 +109,8 @@ int specialize_spirv(std::vector<uint32_t>& spirv, const VkSpecializationInfo* i
 int legalize_non_finite_fp16_constants(std::vector<uint32_t>& spirv);
 int legalize_storage_buffer_16bit_integer_spirv(std::vector<uint32_t>& spirv);
 std::string spirv_literal_string(const uint32_t* words, size_t word_count);
-int legalize_packed_integer_dot_spirv(std::vector<uint32_t>& spirv, size_t& replacement_count);
+int legalize_packed_integer_dot_spirv(std::vector<uint32_t>& spirv, size_t& replacement_count,
+                                      bool* uses_integer_dot = nullptr);
 bool spirv_instruction_has_result_type(spv::Op opcode);
 int restore_packed_integer_dot_ir(tint::core::ir::Module& module, size_t expected_count);
 int strengthen_atomic_compare_exchange_ir(tint::core::ir::Module& module);

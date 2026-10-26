@@ -44,13 +44,13 @@ try
     }
     translated.workgroup_reshape_safe = can_reshape_workgroup(spirv);
     size_t packed_integer_dot_count = 0;
-    if (legalize_packed_integer_dot_spirv(spirv, packed_integer_dot_count) != 0)
+    bool uses_integer_dot = false;
+    if (legalize_packed_integer_dot_spirv(spirv, packed_integer_dot_count, &uses_integer_dot) != 0)
     {
         log_error("SPIR-V packed integer dot legalization failed");
         return -1;
     }
-    if (packed_integer_dot_count != 0
-        && !input.shader_profile.packed_integer_dot_enabled)
+    if (uses_integer_dot && !input.shader_profile.packed_integer_dot_enabled)
     {
         log_error("SPIR-V packed integer dot product requires VK_KHR_shader_integer_dot_product");
         return -1;

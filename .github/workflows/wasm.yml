@@ -100,10 +100,16 @@ jobs:
       - name: Build and link WASM
         run: |
           cmake --build build-wasm \
-            --target nikki nikki_amalgamate test_nikki_compute --parallel 2
+            --target nikki nikki_amalgamate test_nikki_compute test_nikki_cooperative_matrix_translation test_nikki_packed_integer_dot --parallel 2
           test -s build-wasm/libnikki.a
           test -s build-wasm/tests/test_nikki_compute.js
           test -s build-wasm/tests/test_nikki_compute.wasm
+
+      # Exercise real SPIR-V -> Tint -> WGSL without requiring matrix-capable GPU hardware.
+      - name: Test matrix and packed integer dot translation
+        run: |
+          node build-wasm/tests/test_nikki_cooperative_matrix_translation.js
+          node build-wasm/tests/test_nikki_packed_integer_dot.js
 
       - name: Install and package the complete SDK
         run: |

@@ -282,10 +282,9 @@ int main()
                 physical_device_properties.driverVersion, NIKKI_TEST_RELEASE_VERSION_STRING);
         return 1;
     }
-    if (!strstr(physical_device_properties.deviceName, "experimental")
-        || !strstr(physical_device_properties.deviceName, "non-conformant"))
+    if (strncmp(physical_device_properties.deviceName, "nikki: ", 7) != 0)
     {
-        fprintf(stderr, "physical device name does not disclose non-conformant status: %s\n",
+        fprintf(stderr, "unexpected physical device name: %s\n",
                 physical_device_properties.deviceName);
         return 1;
     }
@@ -568,8 +567,7 @@ int main()
         fprintf(stderr, "unexpected nikki driver ID: %u\n", (unsigned int)driver_properties.driverID);
         return 1;
     }
-    if (!strstr(driver_properties.driverName, "experimental")
-        || !strstr(driver_properties.driverName, "non-conformant")
+    if (strcmp(driver_properties.driverName, "nikki") != 0
         || !strstr(driver_properties.driverInfo, NIKKI_TEST_RELEASE_VERSION_STRING)
         || !strstr(driver_properties.driverInfo, "experimental")
         || !strstr(driver_properties.driverInfo, "non-conformant")
@@ -2445,13 +2443,13 @@ int main()
         CHECK_VK(MapMemory(device, memories[0], 0, buffer_size, 0, (void**)&integer_dot_input));
         integer_dot_input[0] = 0xfffefdfc;
         integer_dot_input[1] = 0xfbfaf9f8;
+        integer_dot_input[2] = 0x01010101;
         CHECK_VK(FlushMappedMemoryRanges(device, 1, &input_range));
         UnmapMemory(device, memories[0]);
 
         uint32_t* integer_dot_output = 0;
         CHECK_VK(MapMemory(device, memories[1], 0, buffer_size, 0, (void**)&integer_dot_output));
-        integer_dot_output[0] = 0;
-        integer_dot_output[1] = 0;
+        memset(integer_dot_output, 0, 12 * sizeof(uint32_t));
         CHECK_VK(FlushMappedMemoryRanges(device, 1, &output_range));
         UnmapMemory(device, memories[1]);
 
@@ -2485,11 +2483,18 @@ int main()
 
         CHECK_VK(MapMemory(device, memories[1], 0, buffer_size, 0, (void**)&integer_dot_output));
         CHECK_VK(InvalidateMappedMemoryRanges(device, 1, &output_range));
-        if ((int32_t)integer_dot_output[0] != 70 || integer_dot_output[1] != 252998)
+        const uint32_t expected_dot[] = {
+            70u, 252998u, (uint32_t)-2490, 0x7fffffffu, 0x80000000u,
+            0x80000046u, 0xffffffffu, 253008u, 0x80000000u, 2147481157u,
+            0x7fffffffu, 0x7fffffffu};
+        for (unsigned i = 0; i < sizeof(expected_dot) / sizeof(expected_dot[0]); i++)
         {
-            fprintf(stderr, "packed integer dot mismatch signed=%d unsigned=%u\n",
-                    (int32_t)integer_dot_output[0], integer_dot_output[1]);
-            return 1;
+            if (integer_dot_output[i] != expected_dot[i])
+            {
+                fprintf(stderr, "packed integer dot case %u mismatch: got %08x expected %08x\n",
+                        i, integer_dot_output[i], expected_dot[i]);
+                return 1;
+            }
         }
         UnmapMemory(device, memories[1]);
 
