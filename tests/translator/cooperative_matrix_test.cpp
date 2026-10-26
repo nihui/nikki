@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "../../src/translator/translator_stages.h"
+#include "../runtime/cooperative_matrix_binding_spirv.h"
 #include <spirv-tools/libspirv.hpp>
+#include "src/tint/lang/wgsl/ast/call_expression.h"
+#include "src/tint/lang/wgsl/ast/identifier.h"
+#include "src/tint/lang/wgsl/ast/identifier_expression.h"
+#include "src/tint/lang/wgsl/reader/reader.h"
+#include "src/tint/lang/wgsl/sem/value_expression.h"
 #include <stdio.h>
 #include <sstream>
 #include <fstream>
@@ -183,12 +189,15 @@ bool check_packed_addressing(tint::core::ir::Module& module, const Fixture& fixt
         auto* pointer = call->Args()[0]->Type()->As<tint::core::type::Pointer>();
         if (!pointer || pointer->AddressSpace() != tint::core::AddressSpace::kStorage)
             continue;
-        auto* layout = call->Args()[store ? 3 : 2]->As<tint::core::ir::Constant>();
-        if (!layout || layout->Value()->ValueAs<bool>() != fixture.column_major)
+        const auto& templates = call->ExplicitTemplateParams();
+        if (templates.Length() != (store ? 1u : 2u) || call->Args().size() != (store ? 4u : 3u))
+            return false;
+        const auto* layout = std::get_if<tint::core::Majorness>(&templates[store ? 0 : 1]);
+        if (!layout || (*layout == tint::core::Majorness::kColMajor) != fixture.column_major)
             return false;
         uint32_t offset, stride;
         if (!constant_u32(call->Args()[1], offset)
-            || !constant_u32(call->Args()[store ? 4 : 3], stride)
+            || !constant_u32(call->Args()[store ? 3 : 2], stride)
             || offset != fixture.offset * 2
             || stride != (store && !fixture.stride ? 8 : fixture.stride) * 2)
         {
@@ -363,6 +372,7 @@ int translate_production(std::vector<uint32_t> words, const char* entry_point, n
     input.translator = std::make_shared<nikki_detail::TranslatorInstanceState>();
     input.translator->wgsl_allowed_features = tint::wgsl::AllowedFeatures::Everything();
     input.descriptor_layout.push_back({0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT});
+    input.descriptor_layout.push_back({0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT});
     return nikki_detail::translate_shader(input, result) == 0 ? 0 : 1;
 }
 
@@ -395,6 +405,219 @@ int production_fixture(const char* name, const std::string& assembly, const char
     if (!tools.Assemble(assembly, &words) || !tools.Validate(words))
         return 1;
     return translate_production(std::move(words), entry_point, result, matrix_features);
+}
+
+// Inspect the final, resolved WGSL arguments: packed i8/u8 matrix accesses
+// count i32 backing elements, not individual bytes. Checking whole-source
+// literals would miss a stray multiplication by four on these arguments.
+bool check_int8_addressing(const std::string& wgsl, uint32_t offset, uint32_t stride)
+{
+    tint::Source::File source("matrix-addressing.wgsl", wgsl);
+    tint::wgsl::reader::Options options;
+    options.allowed_features = tint::wgsl::AllowedFeatures::Everything();
+    auto program = tint::wgsl::reader::Parse(&source, options);
+    if (!program.IsValid())
+        return false;
+    unsigned loads = 0;
+    for (auto* node : program.ASTNodes().Objects())
+    {
+        const auto* call = node->As<tint::ast::CallExpression>();
+        if (!call || call->target->identifier->symbol.Name() != "subgroupMatrixLoad")
+            continue;
+        if (call->args.Length() != 3)
+            return false;
+        const auto* offset_expression = program.Sem().Get(call->args[1])->As<tint::sem::ValueExpression>();
+        const auto* stride_expression = program.Sem().Get(call->args[2])->As<tint::sem::ValueExpression>();
+        const auto* offset_value = offset_expression ? offset_expression->ConstantValue() : nullptr;
+        const auto* stride_value = stride_expression ? stride_expression->ConstantValue() : nullptr;
+        if (!offset_value || !stride_value
+            || offset_value->ValueAs<uint32_t>() != offset
+            || stride_value->ValueAs<uint32_t>() != stride)
+            return false;
+        loads++;
+    }
+    return loads == 2;
+}
+
+// Check the production ABI, which is consumed both by the WebGPU pipeline
+// layout and by descriptor-range validation. Matrix minimum sizes describe one
+// matrix footprint at the runtime-array member, not the dynamic element index.
+int check_binding_size(const char* name, const std::string& assembly,
+                       uint64_t expected0, uint64_t expected1 = 0,
+                       const char* expected_component = nullptr, const char* majorness = "row_major",
+                       uint32_t expected_stride = 0, uint32_t expected_offset = 7)
+{
+    nikki_detail::TranslationResult result;
+    if (production_fixture(name, assembly, "main", result) != 0)
+        return 1;
+    const size_t count = expected1 ? 2 : 1;
+    if (result.bindings.size() != count)
+    {
+        fprintf(stderr, "%s: expected %zu resource bindings, got %zu\n", name, count, result.bindings.size());
+        return 1;
+    }
+    for (const auto& binding : result.bindings)
+    {
+        const uint64_t expected = binding.binding == 0 ? expected0 : expected1;
+        if (binding.group != 0 || binding.binding >= count || binding.min_binding_size != expected)
+        {
+            fprintf(stderr, "%s: group %u binding %u minimum is %llu, expected %llu\n%s\n",
+                    name, binding.group, binding.binding,
+                    (unsigned long long)binding.min_binding_size, (unsigned long long)expected,
+                    result.wgsl.c_str());
+            return 1;
+        }
+    }
+    if (result.wgsl.find(std::string("subgroupMatrixStore<") + majorness + ">") == std::string::npos
+        || result.wgsl.find("subgroupMatrixStore(") != std::string::npos)
+    {
+        fprintf(stderr, "%s: deprecated boolean matrix store syntax remains\n%s\n", name, result.wgsl.c_str());
+        return 1;
+    }
+    if (expected_stride && !check_int8_addressing(result.wgsl, expected_offset, expected_stride))
+    {
+        fprintf(stderr, "%s: packed INT8 offset/stride no longer count backing words\n%s\n", name, result.wgsl.c_str());
+        return 1;
+    }
+    if (expected_component && result.wgsl.find(expected_component) == std::string::npos)
+    {
+        fprintf(stderr, "%s: final matrix component type not restored\n%s\n", name, result.wgsl.c_str());
+        return 1;
+    }
+    return 0;
+}
+
+int check_runtime_matrix_fixture()
+{
+    fprintf(stderr, "cooperative_matrix_test: browser pipeline fixture ABI\n");
+    std::vector<uint32_t> words(std::begin(cooperative_matrix_binding_spv), std::end(cooperative_matrix_binding_spv));
+    spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_1);
+    nikki_detail::TranslationResult result;
+    if (!tools.Validate(words) || translate_production(words, "main", result) != 0)
+        return 1;
+    if (result.bindings.size() != 1 || result.bindings[0].group != 0
+        || result.bindings[0].binding != 0 || result.bindings[0].min_binding_size != 512)
+    {
+        fprintf(stderr, "Browser matrix fixture must require exactly 512 bytes\n");
+        return 1;
+    }
+    return 0;
+}
+
+int check_matrix_binding_sizes()
+{
+    int failures = 0;
+    Fixture f;
+    failures += check_binding_size("FP16 single ABI minimum", f.assembly(), 512);
+    f.binary = "OpFAdd";
+    failures += check_binding_size("FP16 dual ABI minimum", f.assembly(), 512);
+    f.column_major = true;
+    failures += check_binding_size("column-major ABI minimum", f.assembly(), 512, 0, nullptr, "col_major");
+    f = Fixture();
+    f.bounded = true;
+    failures += check_binding_size("fixed array size remains larger than matrix", f.assembly(), 1024);
+    f = Fixture();
+    f.two_buffers = true;
+    failures += check_binding_size("two resources each require matrix footprint", f.assembly(), 512, 512);
+    f = Fixture();
+    std::string offset = f.assembly();
+    if (!replace_once(offset, "OpMemberDecorate %block 0 Offset 0", "OpMemberDecorate %block 0 Offset 32"))
+        return 1;
+    failures += check_binding_size("runtime array member byte offset", offset, 544);
+    std::string small = f.assembly();
+    if (!replace_once(small, "%size = OpConstant %u32 16", "%size = OpConstant %u32 8"))
+        return 1;
+    failures += check_binding_size("8x8 FP16 matrix is not a fixed 512 bytes", small, 128);
+
+    std::string rectangular = f.assembly();
+    if (!replace_once(rectangular, "%a_type =", "%smallsize = OpConstant %u32 8\n%a_type =")
+        || !replace_once(rectangular, "%f16 %scope %size %size %zero", "%f16 %scope %smallsize %size %zero")
+        || !replace_once(rectangular, "%f16 %scope %size %size %one", "%f16 %scope %size %smallsize %one")
+        || !replace_once(rectangular, "%f16 %scope %size %size %two", "%f16 %scope %smallsize %smallsize %two"))
+        return 1;
+    failures += check_binding_size("rectangular 8x16 and 16x8 inputs with 8x8 result", rectangular, 256);
+
+    // The same descriptor is accessed through two matrix shapes. The required
+    // size must be the maximum, independent of instruction order.
+    for (bool small_first : {true, false})
+    {
+        std::string shared = f.assembly();
+        if (!replace_once(shared, "%main = OpFunction",
+            "%smallsize = OpConstant %u32 8\n"
+            "%small_c_type = OpTypeCooperativeMatrixKHR %f16 %scope %smallsize %smallsize %two\n"
+            "%main = OpFunction"))
+            return 1;
+        const std::string operation =
+            "%small_c = OpCompositeConstruct %small_c_type %initial\n"
+            "OpCooperativeMatrixStoreKHR %ptr %small_c %layout %store_stride\n";
+        const std::string anchor = small_first ? "%a = OpCooperativeMatrixLoadKHR" : "OpReturn";
+        if (!replace_once(shared, anchor, operation + anchor))
+            return 1;
+        failures += check_binding_size(small_first ? "shared binding grows to maximum" : "shared binding does not shrink", shared, 512);
+    }
+
+    // Separate the input descriptor from the i32 accumulator output. Otherwise
+    // the 1024-byte output requirement would hide an erroneous i32 placeholder
+    // size (1024) instead of the actual i8/u8 input requirement (256).
+    for (bool is_signed : {true, false})
+    {
+        f = Fixture();
+        f.integer = true;
+        f.stride = 16;
+        f.two_buffers = true;
+        std::string integer = f.assembly();
+        if (!replace_once(integer, "OpCooperativeMatrixStoreKHR %ptr %c0 %layout %store_stride\n", ""))
+            return 1;
+        if (!is_signed)
+        {
+            size_t p = 0;
+            while ((p = integer.find("%i8", p)) != std::string::npos)
+            {
+                integer.replace(p, 3, "%u8");
+                p += 3;
+            }
+            if (!replace_once(integer, "%u8 = OpTypeInt 8 1", "%u8 = OpTypeInt 8 0")
+                || !replace_once(integer, "MatrixASignedComponentsKHR|MatrixBSignedComponentsKHR|", ""))
+                return 1;
+        }
+        failures += check_binding_size(is_signed ? "signed INT8 input uses actual byte width" : "unsigned INT8 input uses actual byte width",
+                                       integer, 256, 1024,
+                                       is_signed ? "subgroup_matrix_left<i8" : "subgroup_matrix_left<u8");
+        if (is_signed)
+        {
+            std::string mixed = integer;
+            if (!replace_once(mixed, "%main = OpFunction",
+                              "%wide_a_type = OpTypeCooperativeMatrixKHR %i32 %scope %size %size %zero\n%main = OpFunction")
+                || !replace_once(mixed, "OpCooperativeMatrixStoreKHR %ptr2 %c0",
+                                 "%wide_a = OpCompositeConstruct %wide_a_type %initial\n"
+                                 "OpCooperativeMatrixStoreKHR %ptr2 %wide_a %layout %store_stride\n"
+                                 "OpCooperativeMatrixStoreKHR %ptr2 %c0"))
+                return 1;
+            failures += check_binding_size("same-shape i8 and i32 left matrices remain distinct", mixed, 256, 1024);
+        }
+        std::string packed_stride = integer;
+        if (!replace_once(packed_stride, "%stride = OpConstant %u32 16", "%stride = OpConstant %u32 4"))
+            return 1;
+        failures += check_binding_size(is_signed ? "signed INT8 packed row stride" : "unsigned INT8 packed row stride",
+                                       packed_stride, 256, 1024, nullptr, "row_major", 4, 7);
+        std::string fixed_input = packed_stride;
+        // 64 packed i32 words hold a full 16x16 byte matrix; the independent
+        // output retains a runtime array and its 1024-byte i32 footprint.
+        if (!replace_once(fixed_input, "OpDecorate %array ArrayStride 4",
+                          "OpDecorate %array ArrayStride 4\nOpDecorate %output_array ArrayStride 4")
+            || !replace_once(fixed_input, "%array = OpTypeRuntimeArray %i32",
+                             "%input_count = OpConstant %u32 64\n%array = OpTypeArray %i32 %input_count\n%output_array = OpTypeRuntimeArray %i32")
+            || !replace_once(fixed_input, "%block2 = OpTypeStruct %array", "%block2 = OpTypeStruct %output_array")
+            || !replace_once(fixed_input, "%offset = OpConstant %u32 7", "%offset = OpConstant %u32 0"))
+            return 1;
+        failures += check_binding_size(is_signed ? "signed INT8 fixed packed footprint" : "unsigned INT8 fixed packed footprint",
+                                       fixed_input, 256, 1024, nullptr, "row_major", 4, 0);
+        if (!replace_once(integer, "OpMemberDecorate %block 0 Offset 0", "OpMemberDecorate %block 0 Offset 32"))
+            return 1;
+        failures += check_binding_size(is_signed ? "signed INT8 runtime array offset" : "unsigned INT8 runtime array offset",
+                                       integer, 288, 1024);
+    }
+    return failures;
 }
 
 int check_packed_constants()
@@ -432,8 +655,9 @@ int check_packed_constants()
         const size_t end = body == std::string::npos ? body : source.find('}', body);
         const std::string implementation = body == std::string::npos || end == std::string::npos
                                                ? "" : source.substr(body, end - body);
-        const std::string argument = test.backing == 0 ? literal + "u"
-            : "bitcast<u32>(bitcast<" + std::string(test.backing == 1 ? "i32" : "f32") + ">(" + literal + "u))";
+        // The current builder folds the round-trip backing-type bitcasts,
+        // but must retain the exact unsigned bits entering the runtime helper.
+        const std::string argument = literal + "u";
         const std::string expected_call = "nikki_unpack_f16(" + argument + ")";
         const size_t call = source.find(expected_call);
         const size_t let = call == std::string::npos ? call : source.rfind("let ", call);
@@ -650,11 +874,20 @@ int main(int argc, char** argv)
             nikki_detail::TranslationResult result;
             failures += translate_production(std::move(words), "main", result);
             if (!result.wgsl.empty())
+            {
+                for (const auto& binding : result.bindings)
+                    fprintf(stderr, "matrix binding ABI: group=%u binding=%u min_binding_size=%llu\n",
+                            binding.group, binding.binding, (unsigned long long)binding.min_binding_size);
                 printf("// %s\n%s\n", argv[i], result.wgsl.c_str());
+            }
         }
         return failures ? 1 : 0;
     }
     int failures = nikki_detail::cooperative_matrix_translation_probe() ? 0 : 1;
+    if (failures)
+        fprintf(stderr, "Cooperative matrix capability translation probe failed\n");
+    failures += check_runtime_matrix_fixture();
+    failures += check_matrix_binding_sizes();
     failures += check_packed_constants();
     failures += check_reused_scratch();
     failures += check_scratch_capacity();

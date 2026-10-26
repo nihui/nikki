@@ -293,8 +293,6 @@ try
     }
 
     translated.wgsl = wgsl_result->wgsl;
-    if (restore_cooperative_matrix_wgsl_types(translated.wgsl, cooperative_matrix_info) != 0)
-        return -1;
     if (restore_subgroup_id_builtins(translated.wgsl, subgroup_builtin_substitutions) != 0)
         return -1;
     if (translated.fixed_subgroup_size != 0)

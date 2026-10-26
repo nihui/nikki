@@ -71,14 +71,6 @@ enum CooperativeMatrixMarker
 
 struct CooperativeMatrixLegalization
 {
-    struct ComponentTypeSubstitution
-    {
-        uint32_t use;
-        uint32_t rows;
-        uint32_t columns;
-        bool is_signed;
-    };
-
     size_t load_count;
     size_t store_count;
     size_t muladd_count;
@@ -87,7 +79,6 @@ struct CooperativeMatrixLegalization
     size_t scalar_subtract_count;
     size_t scalar_multiply_count;
     size_t matrix_binary_count;
-    std::vector<ComponentTypeSubstitution> component_type_substitutions;
 
     CooperativeMatrixLegalization()
         : load_count(0), store_count(0), muladd_count(0), convert_count(0), scalar_add_count(0), scalar_subtract_count(0), scalar_multiply_count(0), matrix_binary_count(0)
@@ -119,8 +110,7 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
 int restore_cooperative_matrix_ir(tint::core::ir::Module& module,
                                   const CooperativeMatrixLegalization& legalization,
                                   uint32_t subgroup_size);
-int restore_cooperative_matrix_wgsl_types(
-    std::string& wgsl, const CooperativeMatrixLegalization& legalization);
+int normalize_cooperative_matrix_overloads(tint::core::ir::Module& module);
 int legalize_uniform_global_invocation_z(std::vector<uint32_t>& spirv);
 
 bool uses_push_constants(const tint::core::ir::Module& module);

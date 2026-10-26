@@ -148,6 +148,12 @@ else()
         set_tests_properties(test_nikki_version PROPERTIES
             LABELS "nikki;structure;version")
 
+        add_test(NAME test_nikki_dawn_bootstrap
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/bootstrap_dawn_test.py")
+        set_tests_properties(test_nikki_dawn_bootstrap PROPERTIES
+            LABELS "nikki;structure;dependencies")
+
         add_test(NAME test_nikki_source_manifest
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/manifest_test.py")

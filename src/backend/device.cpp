@@ -71,13 +71,6 @@ EM_JS(int, nikki_read_subgroup_matrix_configs,
     try
     {
         var feature_name = "chromium-experimental-subgroup-matrix";
-        var feature_value = 0x00050034;
-
-        // Emdawnwebgpu does not generate Dawn-only extension enums, while
-        // Chrome exposes this experimental feature directly to JavaScript.
-        // Add the missing sparse enum entry so requestDevice() can forward it.
-        WebGPU.FeatureName[feature_value] = feature_name;
-
         var js_adapter = WebGPU.getJsObject(adapter);
         if (!js_adapter || !js_adapter.features || !js_adapter.features.has(feature_name))
             return -1;
@@ -87,6 +80,10 @@ EM_JS(int, nikki_read_subgroup_matrix_configs,
         if (!matrix_configs)
             return 0;
 
+        // This is nikki's private five-word payload, not the upstream
+        // WGPUSubgroupMatrixConfig layout. The pinned Emdawn runtime leaves
+        // that struct's new min/maxSubgroupSize fields uninitialized; do not
+        // consume them or depend on its struct size here.
         var component_types = {
             "f16": 1,
             "f32": 2,
@@ -306,7 +303,7 @@ static std::optional<VkComponentTypeKHR> cooperative_matrix_component_type(uint3
 
 WGPUFeatureName cooperative_matrix_feature_name()
 {
-    return (WGPUFeatureName)0x00050034;
+    return WGPUFeatureName_ChromiumExperimentalSubgroupMatrix;
 }
 #else
 static std::optional<VkComponentTypeKHR> cooperative_matrix_component_type(WGPUSubgroupMatrixComponentType type)

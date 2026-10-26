@@ -17,6 +17,7 @@ static_assert(sizeof(void*) == NIKKI_TEST_WASM_POINTER_SIZE, "unexpected WASM SD
 
 #include "../shaders/compute_spirv.h"
 #include "../shaders/buffer_access_spirv.h"
+#include "cooperative_matrix_binding_spirv.h"
 
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* name);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceExtensionProperties(
@@ -604,6 +605,7 @@ int main()
                 subgroup_size_properties.minSubgroupSize, subgroup_size_properties.maxSubgroupSize);
         return 1;
     }
+    bool matrix_binding_test_supported = false;
     uint32_t cooperative_matrix_property_count = 0;
     CHECK_VK(GetPhysicalDeviceCooperativeMatrixPropertiesKHR(
         physical_device, &cooperative_matrix_property_count, 0));
@@ -628,6 +630,13 @@ int main()
         for (uint32_t i = 0; i < cooperative_matrix_property_count; i++)
         {
             const VkCooperativeMatrixPropertiesKHR& matrix = cooperative_matrix_properties[i];
+            if (matrix.MSize == 16 && matrix.NSize == 16 && matrix.KSize == 16
+                && matrix.AType == VK_COMPONENT_TYPE_FLOAT16_KHR
+                && matrix.BType == VK_COMPONENT_TYPE_FLOAT16_KHR
+                && matrix.CType == VK_COMPONENT_TYPE_FLOAT16_KHR
+                && matrix.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR
+                && matrix.scope == VK_SCOPE_SUBGROUP_KHR && !matrix.saturatingAccumulation)
+                matrix_binding_test_supported = true;
             if (matrix.MSize == 0 || matrix.NSize == 0 || matrix.KSize == 0
                 || matrix.AType != matrix.BType || matrix.CType != matrix.ResultType
                 || matrix.saturatingAccumulation || matrix.scope != VK_SCOPE_SUBGROUP_KHR)
@@ -2505,6 +2514,126 @@ int main()
     else
     {
         printf("[nikki-test] packed-integer-dot: SKIP (feature unavailable)\n");
+    }
+
+    if (matrix_binding_test_supported && shader_f16_supported)
+    {
+        // Keep this separate from the deliberately odd-sized generic buffers.
+        // A runtime float[] only has a 4-byte ordinary minimum, but storing a
+        // 16x16 FP16 matrix requires 512 bytes in the WebGPU pipeline layout.
+        const VkDeviceSize matrix_bytes = 16 * 16 * sizeof(uint16_t);
+        VkBufferCreateInfo matrix_buffer_info = {};
+        matrix_buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        matrix_buffer_info.size = matrix_bytes;
+        matrix_buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        matrix_buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkBuffer matrix_buffer = VK_NULL_HANDLE;
+        CHECK_VK(CreateBuffer(device, &matrix_buffer_info, 0, &matrix_buffer));
+        VkMemoryRequirements matrix_requirements;
+        GetBufferMemoryRequirements(device, matrix_buffer, &matrix_requirements);
+        if (!(matrix_requirements.memoryTypeBits & (1u << host_memory_type)))
+        {
+            fprintf(stderr, "matrix buffer has no compatible host-visible memory\n");
+            return 1;
+        }
+        VkMemoryAllocateInfo matrix_allocate_info = {};
+        matrix_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        matrix_allocate_info.allocationSize = matrix_requirements.size;
+        matrix_allocate_info.memoryTypeIndex = host_memory_type;
+        VkDeviceMemory matrix_memory = VK_NULL_HANDLE;
+        CHECK_VK(AllocateMemory(device, &matrix_allocate_info, 0, &matrix_memory));
+        CHECK_VK(BindBufferMemory(device, matrix_buffer, matrix_memory, 0));
+        void* matrix_mapped = 0;
+        CHECK_VK(MapMemory(device, matrix_memory, 0, matrix_bytes, 0, &matrix_mapped));
+        memset(matrix_mapped, 0, matrix_bytes);
+        VkMappedMemoryRange matrix_range = {};
+        matrix_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        matrix_range.memory = matrix_memory;
+        matrix_range.size = matrix_bytes;
+        CHECK_VK(FlushMappedMemoryRanges(device, 1, &matrix_range));
+        UnmapMemory(device, matrix_memory);
+
+        std::vector<uint32_t> matrix_spirv(
+            cooperative_matrix_binding_spv,
+            cooperative_matrix_binding_spv + sizeof(cooperative_matrix_binding_spv) / sizeof(uint32_t));
+        // Run exactly one subgroup, so stores from different subgroups cannot race.
+        for (size_t offset = 5; offset < matrix_spirv.size(); offset += matrix_spirv[offset] >> 16)
+        {
+            if ((matrix_spirv[offset] & 0xffff) == 16 && matrix_spirv[offset + 2] == 17)
+                matrix_spirv[offset + 3] = subgroup_properties.subgroupSize;
+        }
+        VkShaderModuleCreateInfo matrix_shader_info = shader_module_create_info;
+        matrix_shader_info.codeSize = matrix_spirv.size() * sizeof(uint32_t);
+        matrix_shader_info.pCode = matrix_spirv.data();
+        VkShaderModule matrix_shader = VK_NULL_HANDLE;
+        CHECK_VK(CreateShaderModule(device, &matrix_shader_info, 0, &matrix_shader));
+        VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT matrix_subgroup_size = {};
+        matrix_subgroup_size.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT;
+        matrix_subgroup_size.requiredSubgroupSize = subgroup_properties.subgroupSize;
+        VkComputePipelineCreateInfo matrix_pipeline_info = pipeline_create_info;
+        matrix_pipeline_info.stage.module = matrix_shader;
+        matrix_pipeline_info.stage.pNext = subgroup_size_control_supported ? &matrix_subgroup_size : 0;
+        VkPipeline matrix_pipeline = VK_NULL_HANDLE;
+        // Once the exact matrix configuration is advertised, pipeline failures
+        // are regressions, not an excuse to skip the execution checks.
+        CHECK_VK(CreateComputePipelines(device, VK_NULL_HANDLE, 1, &matrix_pipeline_info, 0, &matrix_pipeline));
+
+        VkDescriptorBufferInfo matrix_descriptor = {};
+        matrix_descriptor.buffer = matrix_buffer;
+        VkWriteDescriptorSet matrix_write = {};
+        matrix_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        matrix_write.dstBinding = 0;
+        matrix_write.descriptorCount = 1;
+        matrix_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        matrix_write.pBufferInfo = &matrix_descriptor;
+        const VkDeviceSize matrix_ranges[] = {4, matrix_bytes - 4, matrix_bytes};
+        for (unsigned i = 0; i < 3; i++)
+        {
+            matrix_descriptor.range = matrix_ranges[i];
+            CHECK_VK(ResetCommandBuffer(command_buffer, 0));
+            CHECK_VK(BeginCommandBuffer(command_buffer, &begin_info));
+            CmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, matrix_pipeline);
+            CmdPushDescriptorSetKHR(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &matrix_write);
+            CmdDispatch(command_buffer, 1, 1, 1);
+            const VkResult end_result = EndCommandBuffer(command_buffer);
+            if (i < 2)
+            {
+                if (end_result != VK_ERROR_INITIALIZATION_FAILED)
+                {
+                    fprintf(stderr, "matrix binding range %llu was not rejected: %d\n",
+                            (unsigned long long)matrix_ranges[i], end_result);
+                    return 1;
+                }
+            }
+            else
+            {
+                CHECK_VK(end_result);
+                CHECK_VK(ResetFences(device, 1, &fence));
+                CHECK_VK(QueueSubmit(queue, 1, &submit_info, fence));
+                CHECK_VK(WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
+            }
+        }
+        CHECK_VK(MapMemory(device, matrix_memory, 0, matrix_bytes, 0, &matrix_mapped));
+        CHECK_VK(InvalidateMappedMemoryRanges(device, 1, &matrix_range));
+        const uint16_t* matrix_output = (const uint16_t*)matrix_mapped;
+        for (unsigned i = 0; i < 16 * 16; i++)
+        {
+            if (matrix_output[i] != 0x3c00) // FP16 1.0
+            {
+                fprintf(stderr, "matrix binding output %u mismatch: got %04x expected 3c00\n", i, matrix_output[i]);
+                return 1;
+            }
+        }
+        UnmapMemory(device, matrix_memory);
+        DestroyPipeline(device, matrix_pipeline, 0);
+        DestroyShaderModule(device, matrix_shader, 0);
+        DestroyBuffer(device, matrix_buffer, 0);
+        FreeMemory(device, matrix_memory, 0);
+        printf("[nikki-test] cooperative-matrix-binding-range: PASS (4/508-byte ranges rejected, 512-byte range executed, 256 FP16 outputs)\n");
+    }
+    else
+    {
+        printf("[nikki-test] cooperative-matrix-binding-range: SKIP (16x16x16 FP16 matrix configuration unavailable)\n");
     }
 
     VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;

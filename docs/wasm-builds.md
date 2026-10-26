@@ -150,3 +150,23 @@ choose their own heap-growth and maximum-memory flags. The browser compute
 test verifies real wasm64 execution; the focused Node bridge test additionally
 reserves a Memory64 heap larger than 4 GiB and writes/readbacks at high addresses.
 Neither is a full multi-gigabyte application or GPU performance benchmark.
+
+## Pinned Dawn writer patch
+
+Dawn/Tint and Emdawnwebgpu are updated as one pinned version set; SPIRV-Tools,
+SPIRV-Headers and Vulkan-Headers follow that Dawn revision's DEPS. Emscripten
+remains pinned to 6.0.12. Bootstrap applies
+`patches/dawn-wgsl-matrix-i8.patch`: a narrow downstream WGSL writer fix allowing
+existing `i8`/`u8` subgroup-matrix element types to be emitted. It does not enable
+a general-purpose scalar 8-bit WGSL extension.
+
+Configure verifies the actual `NIKKI_DAWN_SOURCE_DIR` revision, dependency
+checkouts, patch stamp and patched source bytes without changing files. To
+prepare an alternate checkout, use
+`python3 tools/bootstrap_dawn.py --dawn-source-dir /path/to/dawn --force`.
+`--check` performs the same read-only verification used during configuration.
+
+SDK packaging repeats verification and records `dawn-revision.txt` plus
+`dawn-patch-sha256.txt`; the former is the upstream base revision, not a claim
+that the compiler source is unmodified. The patch digest identifies the patch
+shipped in the corresponding nikki source revision.

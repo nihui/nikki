@@ -9,7 +9,7 @@ import re
 import subprocess
 import tarfile
 
-from bootstrap_dawn import load_versions
+from bootstrap_dawn import load_versions, verify_dawn_state
 
 
 def validate_emdawnwebgpu(stage):
@@ -39,6 +39,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     stage = args.stage.resolve()
     versions = load_versions(root / "CMakeLists.txt")
+    patch_hash = verify_dawn_state(root / "third_party/dawn", root, versions)
     expected = ["lib/libnikki.a", "lib/cmake/nikki/nikkiConfig.cmake",
                 "lib/cmake/nikki/nikkiConfigVersion.cmake", "include/vulkan/vulkan.h",
                 "LICENSE.txt", "THIRD_PARTY_NOTICES.md",
@@ -71,6 +72,7 @@ def main():
                 "architecture.txt": args.arch,
                 "source-revision.txt": git_revision(root),
                 "dawn-revision.txt": git_revision(root / "third_party/dawn"),
+                "dawn-patch-sha256.txt": patch_hash,
                 "emsdk-version.txt": subprocess.check_output(["emcc", "-dumpversion"], text=True).strip()}
     if metadata["dawn-revision.txt"] != versions["NIKKI_DAWN_COMMIT"]:
         raise SystemExit("Dawn revision does not match the pinned dependency")

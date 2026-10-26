@@ -92,7 +92,6 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
     std::unordered_map<uint32_t, uint32_t> cooperative_matrix_component_types;
     std::unordered_set<uint32_t> cooperative_matrix_types;
     std::unordered_set<uint32_t> cooperative_matrix_8bit_component_types;
-    std::vector<CooperativeMatrixLegalization::ComponentTypeSubstitution> cooperative_matrix_32bit_integer_types;
     uint32_t void_type = 0;
 
     for (size_t i = 5; i < spirv.size();)
@@ -164,33 +163,6 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
             if (integer_width == 8)
             {
                 cooperative_matrix_8bit_component_types.insert(spirv[i + 2]);
-                CooperativeMatrixLegalization::ComponentTypeSubstitution substitution;
-                substitution.use = use;
-                substitution.rows = rows;
-                substitution.columns = columns;
-                substitution.is_signed = integer_signed != 0;
-                bool duplicate = false;
-                for (size_t j = 0; j < info.component_type_substitutions.size(); j++)
-                {
-                    const CooperativeMatrixLegalization::ComponentTypeSubstitution& existing = info.component_type_substitutions[j];
-                    if (existing.use == substitution.use && existing.rows == substitution.rows
-                        && existing.columns == substitution.columns && existing.is_signed == substitution.is_signed)
-                    {
-                        duplicate = true;
-                        break;
-                    }
-                }
-                if (!duplicate)
-                    info.component_type_substitutions.push_back(substitution);
-            }
-            else if (integer_width == 32)
-            {
-                CooperativeMatrixLegalization::ComponentTypeSubstitution type;
-                type.use = use;
-                type.rows = rows;
-                type.columns = columns;
-                type.is_signed = integer_signed != 0;
-                cooperative_matrix_32bit_integer_types.push_back(type);
             }
             uses_cooperative_matrix = true;
         }
@@ -200,21 +172,6 @@ int legalize_cooperative_matrix_spirv(std::vector<uint32_t>& spirv,
 
     if (!uses_cooperative_matrix)
         return 0;
-
-    for (size_t i = 0; i < info.component_type_substitutions.size(); i++)
-    {
-        const CooperativeMatrixLegalization::ComponentTypeSubstitution& substitution = info.component_type_substitutions[i];
-        for (size_t j = 0; j < cooperative_matrix_32bit_integer_types.size(); j++)
-        {
-            const CooperativeMatrixLegalization::ComponentTypeSubstitution& type = cooperative_matrix_32bit_integer_types[j];
-            if (type.use == substitution.use && type.rows == substitution.rows
-                && type.columns == substitution.columns && type.is_signed == substitution.is_signed)
-            {
-                log_error("8-bit and 32-bit cooperative matrix types have an ambiguous WGSL representation");
-                return -1;
-            }
-        }
-    }
 
     uint32_t next_id = original_bound;
     if (void_type == 0)

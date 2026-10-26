@@ -80,6 +80,7 @@ jobs:
         run: |
           python3 tests/cmake/version_test.py
           python3 tests/cmake/manifest_test.py
+          python3 tests/cmake/bootstrap_dawn_test.py
           node tests/runtime/wasm_pointer_bridge_test.mjs --require-memory64
 
       - name: Configure

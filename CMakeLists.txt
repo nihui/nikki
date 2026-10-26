@@ -65,12 +65,12 @@ set(NIKKI_DAWN_LIBRARY_TYPE STATIC CACHE STRING
     "Dawn monolithic library type for native builds (STATIC or SHARED)")
 set_property(CACHE NIKKI_DAWN_LIBRARY_TYPE PROPERTY STRINGS STATIC SHARED)
 
-set(NIKKI_DAWN_COMMIT "0bc38adde72b79013536f8ce354b639ae19ae195")
-set(NIKKI_DAWN_DEPS_SHA256 "237449559ddc1888fd5ba62a9fcc0b21a53f21afa061c60ff8f077c6f7364075")
-set(NIKKI_EMDAWNWEBGPU_PORT_FILENAME "emdawnwebgpu-v20260720.160313.remoteport.py")
-set(NIKKI_EMDAWNWEBGPU_PORT_SHA256 "ec2b01bab7f853e36ada4620821b1821baee9bbfab16f1350ecbb22856b25a0d")
-set(NIKKI_EMDAWNWEBGPU_PACKAGE_URL "https://github.com/google/dawn/releases/download/v20260720.160313/emdawnwebgpu_pkg-v20260720.160313.zip")
-set(NIKKI_EMDAWNWEBGPU_PACKAGE_SHA512 "88f2f3de88652b145374c2b607888f2edb2ab30cd9c81b159bc24dbe06e70d6a093fa097965cf4bdb6953aec9990e99f568f9b46d8b71dacad49afcc4498b16c")
+set(NIKKI_DAWN_COMMIT "1716e88cc9e58398fab5d4473f7f2e858667b677")
+set(NIKKI_DAWN_DEPS_SHA256 "c0f0bce0882ea814a72469c5f72accfab3bde918c5531a9743bce1aa6f69c07c")
+set(NIKKI_EMDAWNWEBGPU_PORT_FILENAME "emdawnwebgpu-v20261023.194543.remoteport.py")
+set(NIKKI_EMDAWNWEBGPU_PORT_SHA256 "e235ec5616ed5bc3fc4d1b87fd2f9dc16cd8cf91ec1e835b37eea923be9d1219")
+set(NIKKI_EMDAWNWEBGPU_PACKAGE_URL "https://github.com/google/dawn/releases/download/v20261023.194543/emdawnwebgpu_pkg-v20261023.194543.zip")
+set(NIKKI_EMDAWNWEBGPU_PACKAGE_SHA512 "fc8ce33f1253032b9ba8e6998ca07760d87ef3f943dff40a7dffe5809d8bde4a1d32f0d982c3092122bcaf15e466437cbccb1a3b4ee1d5b3ed6ae2eff3140f12")
 set(NIKKI_EMSDK_VERSION "6.0.12")
 set(NIKKI_ASYNCIFY_STACK_SIZE "65536")
 set(NIKKI_WASM_STACK_SIZE "1048576")
@@ -90,6 +90,17 @@ function(nikki_validate_environment)
     if(NOT EXISTS "${NIKKI_DAWN_SOURCE_DIR}/out/.nikki-deps-stamp")
         message(FATAL_ERROR
             "Dawn dependencies are missing. Run tools/bootstrap_dawn.py from the nikki project root.")
+    endif()
+
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/bootstrap_dawn.py"
+            --check --dawn-source-dir "${NIKKI_DAWN_SOURCE_DIR}"
+        RESULT_VARIABLE NIKKI_DAWN_CHECK_RESULT
+        OUTPUT_VARIABLE NIKKI_DAWN_CHECK_OUTPUT
+        ERROR_VARIABLE NIKKI_DAWN_CHECK_ERROR)
+    if(NOT NIKKI_DAWN_CHECK_RESULT EQUAL 0)
+        message(FATAL_ERROR "Dawn dependency validation failed:\n${NIKKI_DAWN_CHECK_OUTPUT}${NIKKI_DAWN_CHECK_ERROR}")
     endif()
 
     message(STATUS "nikki Dawn/Tint commit: ${NIKKI_DAWN_COMMIT}")
@@ -181,7 +192,8 @@ function(nikki_add_dependencies)
     set(TINT_ENABLE_IR_DUMPING OFF CACHE BOOL "" FORCE)
     if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
         set(TINT_BUILD_SPV_WRITER OFF CACHE BOOL "" FORCE)
-        set(TINT_BUILD_WGSL_READER OFF CACHE BOOL "" FORCE)
+        # Compiler regressions parse final WGSL; production translation uses IR.
+        set(TINT_BUILD_WGSL_READER ${NIKKI_BUILD_TESTS} CACHE BOOL "" FORCE)
     else()
         set(TINT_BUILD_SPV_WRITER ON CACHE BOOL "" FORCE)
         set(TINT_BUILD_WGSL_READER ON CACHE BOOL "" FORCE)
@@ -234,6 +246,7 @@ function(nikki_configure_target target)
         "$<BUILD_INTERFACE:${NIKKI_DAWN_SOURCE_DIR}/third_party/spirv-headers/src/include>"
         "$<BUILD_INTERFACE:${NIKKI_DAWN_SOURCE_DIR}/third_party/spirv-tools/src/include>")
     target_link_libraries(${target} PRIVATE
+        dawn_utils_config
         SPIRV-Tools-opt
         tint_api
         tint_lang_core_ir_transform)

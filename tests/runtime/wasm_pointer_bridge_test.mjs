@@ -56,7 +56,11 @@ function make_fixture(base = 0, memory64 = false, backing_buffer = null) {
     };
     const objects = { [base + 16]: adapter };
     const WebGPU = {
-        FeatureName: {},
+        // The upgraded Emdawn runtime supplies the matrix feature enum itself.
+        // Reject writes to catch any obsolete bridge-side injection.
+        FeatureName: new Proxy({ [feature_value]: feature_name }, {
+            set() { throw new Error("bridge must not mutate upstream feature enums"); },
+        }),
         // Match the pinned Emdawn implementation: wasm32 unsigned conversion,
         // but no conversion of the wasm64 pointer used as an object key.
         getJsObject(handle) {
