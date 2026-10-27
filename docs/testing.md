@@ -18,7 +18,11 @@ selection and arithmetic. It also checks final matrix binding sizes for FP16
 and signed/unsigned INT8, member offsets, different shapes, shared bindings,
 and packed INT8 pointer-element addressing. The dot test checks saturation
 against a wide-integer oracle. The GPU compute test additionally checks 12 packed-dot results, including
-all six opcodes, saturation boundaries and repeated accumulation. Both compiler
+all six opcodes, saturation boundaries and repeated accumulation. Constant-operand
+regressions add 36 GPU output cases covering dynamic, left/right/both constant and default/overridden
+specialization inputs through the production translator and GPU readback. The
+translator also checks signed storage/result variants and existing helper types.
+Both compiler
 tests also run under Node in the wasm32/wasm64 CI lanes. These checks do
 not replace execution on matrix-capable GPU hardware. The compute test reports
 `cooperative-matrix-binding-range: PASS` only after an advertised 16x16x16 FP16

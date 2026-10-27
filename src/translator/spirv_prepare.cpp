@@ -301,6 +301,21 @@ int legalize_packed_integer_dot_spirv(std::vector<uint32_t>& spirv,
     const uint32_t zero = constant(0), sign = constant(0x80000000u);
     const uint32_t maximum = constant(0x7fffffffu), umax = constant(0xffffffffu), eight = constant(8);
     const uint32_t offsets[] = {zero, eight, constant(16), constant(24)};
+    // Keep the marker's input non-constant through Tint's SPIR-V reader.
+    // Its builder folds reverseBits(constant), including frozen specialization
+    // constants. A real function call preserves the value without depending on
+    // its bits or on which operand happens to be constant.
+    uint32_t identity_type = 0;
+    for (size_t i = 5; i < spirv.size(); i += spirv[i] >> 16)
+        if ((spirv[i] & 0xffff) == (uint32_t)spv::Op::OpTypeFunction
+            && (spirv[i] >> 16) == 4 && spirv[i + 2] == u32_type && spirv[i + 3] == u32_type)
+            identity_type = spirv[i + 1];
+    if (!identity_type)
+    {
+        identity_type = next_id++;
+        emit(declarations, spv::Op::OpTypeFunction, {identity_type, u32_type, u32_type});
+    }
+    const uint32_t identity = next_id++, identity_arg = next_id++, identity_label = next_id++;
     std::vector<uint32_t> body;
     auto unary = [&](spv::Op op, uint32_t type, uint32_t a) {
         uint32_t id = next_id++; emit(body, op, {type, id, a}); return id;
@@ -349,7 +364,11 @@ int legalize_packed_integer_dot_spirv(std::vector<uint32_t>& spirv,
             }
             else
             {
-                uint32_t reversed = unary(spv::Op::OpBitReverse, type, lhs);
+                const uint32_t input = cast(u32_type, lhs, type);
+                const uint32_t guarded = next_id++;
+                emit(body, spv::Op::OpFunctionCall, {u32_type, guarded, identity, input});
+                const uint32_t guarded_lhs = cast(type, guarded, u32_type);
+                uint32_t reversed = unary(spv::Op::OpBitReverse, type, guarded_lhs);
                 reversed = unary(spv::Op::OpBitReverse, type, reversed);
                 dot = binary(spv::Op::OpBitwiseXor, type, reversed, rhs);
                 packed_integer_dot_count++;
@@ -409,6 +428,14 @@ int legalize_packed_integer_dot_spirv(std::vector<uint32_t>& spirv,
         }
         legalized.insert(legalized.end(), body.begin() + i, body.begin() + i + wc);
         i += wc;
+    }
+    if (packed_integer_dot_count)
+    {
+        emit(legalized, spv::Op::OpFunction, {u32_type, identity, 0, identity_type});
+        emit(legalized, spv::Op::OpFunctionParameter, {u32_type, identity_arg});
+        emit(legalized, spv::Op::OpLabel, {identity_label});
+        emit(legalized, spv::Op::OpReturnValue, {identity_arg});
+        emit(legalized, spv::Op::OpFunctionEnd, {});
     }
     spirv.swap(legalized);
     return 0;
