@@ -150,7 +150,8 @@ else()
 
         add_test(NAME test_nikki_dawn_bootstrap
             COMMAND "${Python3_EXECUTABLE}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/bootstrap_dawn_test.py")
+                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/bootstrap_dawn_test.py"
+                --dawn-source-dir "${NIKKI_DAWN_SOURCE_DIR}")
         set_tests_properties(test_nikki_dawn_bootstrap PROPERTIES
             LABELS "nikki;structure;dependencies")
 

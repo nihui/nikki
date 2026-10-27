@@ -1,6 +1,7 @@
 # Copyright 2026 nihui
 # SPDX-License-Identifier: Apache-2.0
 
+import argparse
 import hashlib
 import importlib.util
 from pathlib import Path
@@ -12,6 +13,7 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
+DAWN_SOURCE_DIR = ROOT / "third_party/dawn"
 SPEC = importlib.util.spec_from_file_location("bootstrap_dawn", ROOT / "tools/bootstrap_dawn.py")
 BOOTSTRAP = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BOOTSTRAP)
@@ -26,7 +28,7 @@ class DawnPatchTest(unittest.TestCase):
         self.source = self.dawn / BOOTSTRAP.DAWN_PATCH_SOURCE
         self.source.parent.mkdir(parents=True)
         self.original = subprocess.check_output([
-            "git", "-C", str(ROOT / "third_party/dawn"), "show",
+            "git", "-C", str(DAWN_SOURCE_DIR), "show",
             BOOTSTRAP.DAWN_PATCH_COMMIT + ":" + BOOTSTRAP.DAWN_PATCH_SOURCE,
         ])
         self.source.write_bytes(self.original)
@@ -147,4 +149,8 @@ class DawnPatchTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--dawn-source-dir", type=Path, default=DAWN_SOURCE_DIR)
+    args, unittest_args = parser.parse_known_args()
+    DAWN_SOURCE_DIR = args.dawn_source_dir.resolve()
+    unittest.main(argv=[sys.argv[0]] + unittest_args)
