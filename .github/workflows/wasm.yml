@@ -101,7 +101,7 @@ jobs:
       - name: Build and link WASM
         run: |
           cmake --build build-wasm \
-            --target nikki nikki_amalgamate test_nikki_compute test_nikki_cooperative_matrix_translation test_nikki_packed_integer_dot --parallel 2
+            --target nikki nikki_amalgamate test_nikki_compute test_nikki_cooperative_matrix_translation test_nikki_packed_integer_dot --parallel 4
           test -s build-wasm/libnikki.a
           test -s build-wasm/tests/test_nikki_compute.js
           test -s build-wasm/tests/test_nikki_compute.wasm
@@ -148,7 +148,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_FLAGS=${{ matrix.flags }} -DCMAKE_CXX_FLAGS=${{ matrix.flags }} \
             -Dnikki_DIR="$consumer/package/lib/cmake/nikki"
-          cmake --build "$consumer/build" --parallel 2
+          cmake --build "$consumer/build" --parallel 4
           test -s "$consumer/build/test_nikki_compute.wasm"
           # Remote ports create entries here before fetching. An empty directory
           # proves no downloaded port was used, while a new archive proves the
