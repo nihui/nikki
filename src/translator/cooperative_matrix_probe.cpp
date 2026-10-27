@@ -646,9 +646,8 @@ static bool cooperative_matrix_translation_probe_impl()
            && wgsl.find("subgroupMatrixLoad") != std::string::npos
            && wgsl.find("subgroupMatrixMultiplyAccumulate") != std::string::npos
            && wgsl.find("subgroupMatrixScalarMultiply") != std::string::npos
-           && wgsl.find("subgroupMatrixStore(") != std::string::npos
-           && wgsl.find("row_major") == std::string::npos
-           && wgsl.find("col_major") == std::string::npos;
+           && wgsl.find("subgroupMatrixStore<row_major>") != std::string::npos
+           && wgsl.find("subgroupMatrixStore(") == std::string::npos;
 }
 
 bool cooperative_matrix_translation_probe()

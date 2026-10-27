@@ -12,3 +12,11 @@ in `share/nikki/ports/emdawnwebgpu_pkg`, including `webgpu/src/LICENSE`
 (Emscripten's MIT and University of Illinois/NCSA licenses),
 `webgpu_cpp/LICENSE` (BSD 3-Clause), and the local port's license header.
 Other bundled dependency licenses are in `share/nikki/licenses`.
+
+The pinned Dawn/Tint source is built with nikki's downstream
+`patches/dawn-wgsl-matrix-i8.patch`, which adds missing WGSL writer emission for
+existing signed/unsigned 8-bit subgroup-matrix element types. It does not add a
+standalone scalar 8-bit WGSL extension. Bootstrap checks the upstream revision
+and exact pre/post-patch source hashes. SDK archives record the upstream base
+revision in `dawn-revision.txt` and the applied patch digest in
+`dawn-patch-sha256.txt`.

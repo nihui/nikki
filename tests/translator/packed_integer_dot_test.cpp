@@ -77,6 +77,18 @@ uint32_t evaluate(const std::vector<uint32_t>& words, uint32_t a, uint32_t b, ui
     std::map<uint32_t, uint32_t> values;
     std::map<uint32_t, uint32_t> reversals;
     std::map<uint32_t, bool> signed_types;
+    // Recognize the emitted identity helper by its body, not by its ID/name.
+    std::map<uint32_t, bool> identities;
+    for (size_t i = 5; i + 12 < words.size(); i += words[i] >> 16)
+    {
+        const uint32_t* w = words.data() + i;
+        if ((w[0] & 65535) == uint32_t(spv::Op::OpFunction) && (w[0] >> 16) == 5
+            && (w[5] & 65535) == uint32_t(spv::Op::OpFunctionParameter) && (w[5] >> 16) == 3
+            && (w[8] & 65535) == uint32_t(spv::Op::OpLabel) && (w[8] >> 16) == 2
+            && (w[10] & 65535) == uint32_t(spv::Op::OpReturnValue) && (w[10] >> 16) == 2
+            && w[11] == w[7] && (w[12] & 65535) == uint32_t(spv::Op::OpFunctionEnd))
+            identities[w[2]] = true;
+    }
     for (size_t i = 5; i < words.size(); i += words[i] >> 16)
     {
         const auto op = static_cast<spv::Op>(words[i] & 65535);
@@ -90,6 +102,10 @@ uint32_t evaluate(const std::vector<uint32_t>& words, uint32_t a, uint32_t b, ui
         bool has_result = true;
         switch (op)
         {
+        case spv::Op::OpFunctionCall:
+            if (!identities[w[3]] || (w[0] >> 16) != 5) { fprintf(stderr, "Unexpected oracle helper\n"); return 0; }
+            result = values[w[4]];
+            break;
         case spv::Op::OpBitcast: case spv::Op::OpCopyObject: result = values[w[3]]; break;
         case spv::Op::OpBitReverse:
             reversals[w[2]] = w[3];
@@ -195,6 +211,81 @@ bool check(const Case& test)
     if (test.saturating && wgsl->wgsl.find("select(") == std::string::npos) return false;
     return true;
 }
+bool check_constant_operands(const Case& test)
+{
+    for (unsigned mode = 0; mode < 6; mode++)
+    {
+        std::string source = fixture(test);
+        auto replace = [&](const std::string& before, const std::string& after) {
+            const size_t pos = source.find(before);
+            if (pos == std::string::npos) return false;
+            source.replace(pos, before.size(), after);
+            return true;
+        };
+        // dynamic, left constant, right constant, both constants, default/overridden frozen spec.
+        const bool left = mode == 1 || mode == 3 || mode >= 4;
+        const bool right = mode == 2 || mode == 3;
+        const std::string operand = test.signed_operands ? "%i32" : "%u32";
+        std::string constants = "%existing_identity_type = OpTypeFunction %u32 %u32\n";
+        if (left)
+        {
+            if (!replace("%100 = OpLoad " + operand + " %pa\n", "")) return false;
+            constants += std::string(mode >= 4 ? "%100 = OpSpecConstant " : "%100 = OpConstant ") + operand + " 0x80ff017f\n";
+        }
+        if (right)
+        {
+            if (!replace("%101 = OpLoad " + operand + " %pb\n", "")) return false;
+            constants += "%101 = OpConstant " + operand + " 0x80010101\n";
+        }
+        if (!replace("%main = OpFunction", constants + "%main = OpFunction")) return false;
+        if (mode >= 4 && !replace("OpDecorate %block Block", "OpDecorate %100 SpecId 7\nOpDecorate %block Block")) return false;
+        spvtools::SpirvTools assembler(SPV_ENV_VULKAN_1_1);
+        std::vector<uint32_t> words;
+        if (!assembler.Assemble(source, &words, SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS)
+            || !assembler.Validate(words)) return false;
+        // Check type reuse before the production optimizer can remove the
+        // deliberately unused existing function type.
+        auto legalized = words;
+        size_t markers = 0;
+        if (nikki_detail::legalize_packed_integer_dot_spirv(legalized, markers) != 0
+            || markers != 1 || !assembler.Validate(legalized)) return false;
+        uint32_t unsigned_type = 0;
+        for (size_t i = 5; i < legalized.size(); i += legalized[i] >> 16)
+            if ((legalized[i] & 65535) == uint32_t(spv::Op::OpTypeInt)
+                && legalized[i + 2] == 32 && legalized[i + 3] == 0)
+                unsigned_type = legalized[i + 1];
+        size_t identity_types = 0;
+        for (size_t i = 5; i < legalized.size(); i += legalized[i] >> 16)
+            if ((legalized[i] & 65535) == uint32_t(spv::Op::OpTypeFunction)
+                && (legalized[i] >> 16) == 4 && legalized[i + 2] == unsigned_type
+                && legalized[i + 3] == unsigned_type)
+                identity_types++;
+        if (identity_types != 1) return false;
+        nikki_detail::TranslationInput input{};
+        input.spirv = words;
+        if (mode == 5)
+        {
+            const uint32_t value = 0x7f017f01u;
+            input.specialization.entries.push_back({7, 0, sizeof(value)});
+            input.specialization.data.resize(sizeof(value));
+            memcpy(input.specialization.data.data(), &value, sizeof(value));
+        }
+        input.entry_point = "main";
+        input.shader_profile.packed_integer_dot_enabled = true;
+        input.shader_profile.max_uniform_buffer_binding_size = 65536;
+        input.translator = std::make_shared<nikki_detail::TranslatorInstanceState>();
+        input.translator->wgsl_allowed_features = tint::wgsl::AllowedFeatures::Everything();
+        input.descriptor_layout.push_back({0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT});
+        nikki_detail::TranslationResult translated;
+        if (nikki_detail::translate_shader(input, translated) != 0
+            || translated.wgsl.find(test.unsigned_dot ? "dot4U8Packed" : "dot4I8Packed") == std::string::npos)
+        {
+            fprintf(stderr, "%s constant mode %u failed\n", test.opcode, mode);
+            return false;
+        }
+    }
+    return true;
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -238,6 +329,9 @@ int main(int argc, char** argv)
         fprintf(stderr, "packed_integer_dot_test: %s%s\n", test.opcode, test.dual ? " dual" : "");
         if (!check(test)) { tint::Shutdown(); return 1; }
     }
+    for (size_t i : {size_t(0), size_t(1), size_t(3), size_t(4), size_t(9), size_t(10)})
+        if (!check_constant_operands(cases[i])) { tint::Shutdown(); return 1; }
+    fprintf(stderr, "packed_integer_dot_test: PASS (36 constant/specialization translation cases)\n");
     tint::Shutdown();
     return 0;
 }

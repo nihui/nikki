@@ -14,11 +14,21 @@ Compiler-only regressions `test_nikki_cooperative_matrix_translation` and
 `test_nikki_packed_integer_dot` validate real SPIR-V through Tint to WGSL without
 requiring GPU feature support. The matrix test covers packed storage offsets,
 strides, nonfinite packed bit patterns, scratch reuse/capacity, entry-point
-selection and arithmetic; the dot test checks saturation against a wide-integer
-oracle. The GPU compute test additionally checks 12 packed-dot results, including
-all six opcodes, saturation boundaries and repeated accumulation. Both compiler
+selection and arithmetic. It also checks final matrix binding sizes for FP16
+and signed/unsigned INT8, member offsets, different shapes, shared bindings,
+and packed INT8 pointer-element addressing. The dot test checks saturation
+against a wide-integer oracle. The GPU compute test additionally checks 12 packed-dot results, including
+all six opcodes, saturation boundaries and repeated accumulation. Constant-operand
+regressions add 36 GPU output cases covering dynamic, left/right/both constant and default/overridden
+specialization inputs through the production translator and GPU readback. The
+translator also checks signed storage/result variants and existing helper types.
+Both compiler
 tests also run under Node in the wasm32/wasm64 CI lanes. These checks do
-not replace execution on matrix-capable GPU hardware. The matrix executable
+not replace execution on matrix-capable GPU hardware. The compute test reports
+`cooperative-matrix-binding-range: PASS` only after an advertised 16x16x16 FP16
+configuration creates a pipeline, rejects 4/508-byte descriptor ranges, and
+executes a 512-byte range with checked readback. It reports `SKIP` when that
+configuration is unavailable; a SwiftShader skip is not matrix hardware coverage. The matrix executable
 optionally accepts specialized SPIR-V files and prints their generated WGSL.
 
 The compute test also checks scalar and `vec2` read/write/read sequences with

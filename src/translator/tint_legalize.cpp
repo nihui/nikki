@@ -47,13 +47,13 @@ int strengthen_atomic_compare_exchange_ir(tint::core::ir::Module& module)
             tint::core::ir::Var* strong_result = builder.Var(module.Types().ptr<function>(compare->Type()));
             tint::core::ir::Loop* loop = builder.Loop();
             builder.Append(loop->Body(), [&]() {
-                tint::core::ir::CoreBuiltinCall* attempt = builder.Call(
+                tint::core::ir::Value* attempt = builder.Call(
                     result_type, tint::core::BuiltinFn::kAtomicCompareExchangeWeak,
                     pointer, compare, value);
-                tint::core::ir::Access* old_value = builder.Access(compare->Type(), attempt, 0_u);
-                tint::core::ir::Access* exchanged = builder.Access(module.Types().bool_(), attempt, 1_u);
-                tint::core::ir::CoreBinary* value_changed = builder.NotEqual(old_value, compare);
-                tint::core::ir::CoreBinary* complete = builder.Or(exchanged, value_changed);
+                tint::core::ir::Value* old_value = builder.Access(compare->Type(), attempt, 0_u);
+                tint::core::ir::Value* exchanged = builder.Access(module.Types().bool_(), attempt, 1_u);
+                tint::core::ir::Value* value_changed = builder.NotEqual(old_value, compare);
+                tint::core::ir::Value* complete = builder.Or(exchanged, value_changed);
                 tint::core::ir::If* branch = builder.If(complete);
                 builder.Append(branch->True(), [&]() {
                     builder.Store(strong_result, old_value);
@@ -130,10 +130,10 @@ int restore_packed_integer_dot_ir(tint::core::ir::Module& module, size_t expecte
             tint::core::ir::Value* rhs = binary->RHS();
             if (is_signed)
             {
-                lhs = builder.Bitcast(module.Types().u32(), lhs)->Result();
-                rhs = builder.Bitcast(module.Types().u32(), rhs)->Result();
+                lhs = builder.Bitcast(module.Types().u32(), lhs);
+                rhs = builder.Bitcast(module.Types().u32(), rhs);
             }
-            builder.CallWithResult(result,
+            builder.CallReplaceResult(result,
                                    is_signed ? tint::core::BuiltinFn::kDot4I8Packed
                                              : tint::core::BuiltinFn::kDot4U8Packed,
                                    lhs, rhs);

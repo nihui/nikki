@@ -17,6 +17,8 @@ static_assert(sizeof(void*) == NIKKI_TEST_WASM_POINTER_SIZE, "unexpected WASM SD
 
 #include "../shaders/compute_spirv.h"
 #include "../shaders/buffer_access_spirv.h"
+#include "cooperative_matrix_binding_spirv.h"
+#include "packed_dot_constant_spirv.h"
 
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* name);
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceExtensionProperties(
@@ -94,6 +96,75 @@ static std::vector<uint32_t> make_uniform_input_shader_spv()
 
     spirv[3] = array_length_id + 1;
     return spirv;
+}
+
+// Opcodes: SDot, UDot, SUDot, and the three corresponding AccSat forms.
+// Modes: dynamic, constant-left, constant-right, both, spec default, spec override.
+static std::vector<uint32_t> make_constant_dot_shader(unsigned operation, unsigned mode)
+{
+    std::vector<uint32_t> words(packed_dot_constant_spv,
+                                packed_dot_constant_spv + sizeof(packed_dot_constant_spv) / sizeof(uint32_t));
+    const uint32_t result_type = operation % 3 == 1 ? 5 : 6;
+    for (size_t offset = 5; offset < words.size(); offset += words[offset] >> 16)
+    {
+        const uint32_t opcode = words[offset] & 0xffff;
+        if (opcode == 30) // OpTypeStruct: output member type.
+            words[offset + 4] = result_type;
+        else if (opcode == 32 && words[offset + 1] == 14) // Output pointer type.
+            words[offset + 3] = result_type;
+        else if (opcode == 61 && words[offset + 2] == 21) // Accumulator load.
+            words[offset + 1] = result_type;
+        else if (opcode == 43 && words[offset + 2] == 11 && mode >= 4)
+            words[offset] = (4u << 16) | 50u; // OpSpecConstant.
+        else if (opcode == 4450)
+        {
+            words[offset] = (6u << 16) | (4450u + operation);
+            words[offset + 1] = result_type;
+            if (mode == 1 || mode >= 3)
+                words[offset + 3] = 11;
+            if (mode == 2 || mode == 3)
+                words[offset + 4] = 11;
+            if (operation >= 3)
+            {
+                words.insert(words.begin() + offset + 5, 21); // Accumulator before packed format.
+                words[offset] = (7u << 16) | (4450u + operation);
+            }
+        }
+    }
+    if (mode >= 4)
+    {
+        const uint32_t spec_id[] = {0x00040047, 11, 1, 7}; // OpDecorate %constant SpecId 7.
+        // Annotations precede type declarations; avoid a fixed word offset.
+        size_t declarations = 5;
+        while ((words[declarations] & 0xffff) != 19) // OpTypeVoid.
+            declarations += words[declarations] >> 16;
+        words.insert(words.begin() + declarations, spec_id, spec_id + 4);
+    }
+    return words;
+}
+
+static uint32_t constant_dot_expected(uint32_t a, uint32_t b, uint32_t accumulator, unsigned operation)
+{
+    const bool unsigned_dot = operation % 3 == 1;
+    const bool mixed_dot = operation % 3 == 2;
+    int64_t value = 0;
+    for (unsigned lane = 0; lane < 4; lane++)
+    {
+        int x = (a >> (lane * 8)) & 255;
+        int y = (b >> (lane * 8)) & 255;
+        if (!unsigned_dot && x >= 128) x -= 256;
+        if (!unsigned_dot && !mixed_dot && y >= 128) y -= 256;
+        value += x * y;
+    }
+    if (operation >= 3)
+    {
+        value += unsigned_dot ? (int64_t)accumulator : (int64_t)(int32_t)accumulator;
+        const int64_t minimum = unsigned_dot ? 0 : INT32_MIN;
+        const int64_t maximum = unsigned_dot ? UINT32_MAX : INT32_MAX;
+        if (value < minimum) value = minimum;
+        if (value > maximum) value = maximum;
+    }
+    return (uint32_t)value;
 }
 
 static int has_extension(const VkExtensionProperties* properties, uint32_t count, const char* name)
@@ -604,6 +675,7 @@ int main()
                 subgroup_size_properties.minSubgroupSize, subgroup_size_properties.maxSubgroupSize);
         return 1;
     }
+    bool matrix_binding_test_supported = false;
     uint32_t cooperative_matrix_property_count = 0;
     CHECK_VK(GetPhysicalDeviceCooperativeMatrixPropertiesKHR(
         physical_device, &cooperative_matrix_property_count, 0));
@@ -628,6 +700,13 @@ int main()
         for (uint32_t i = 0; i < cooperative_matrix_property_count; i++)
         {
             const VkCooperativeMatrixPropertiesKHR& matrix = cooperative_matrix_properties[i];
+            if (matrix.MSize == 16 && matrix.NSize == 16 && matrix.KSize == 16
+                && matrix.AType == VK_COMPONENT_TYPE_FLOAT16_KHR
+                && matrix.BType == VK_COMPONENT_TYPE_FLOAT16_KHR
+                && matrix.CType == VK_COMPONENT_TYPE_FLOAT16_KHR
+                && matrix.ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR
+                && matrix.scope == VK_SCOPE_SUBGROUP_KHR && !matrix.saturatingAccumulation)
+                matrix_binding_test_supported = true;
             if (matrix.MSize == 0 || matrix.NSize == 0 || matrix.KSize == 0
                 || matrix.AType != matrix.BType || matrix.CType != matrix.ResultType
                 || matrix.saturatingAccumulation || matrix.scope != VK_SCOPE_SUBGROUP_KHR)
@@ -2501,10 +2580,188 @@ int main()
         DestroyPipeline(device, integer_dot_pipeline, 0);
         DestroyShaderModule(device, integer_dot_shader, 0);
         printf("[nikki-test] packed-integer-dot: PASS (12 GPU output cases)\n");
+
+        // Constant folding must not erase the translator's packed-dot markers.
+        // Compile and execute the actual constant/spec-constant variants, rather
+        // than only varying the runtime buffer values of a dynamic shader.
+        for (unsigned operation = 0; operation < 6; operation++)
+        {
+            for (unsigned mode = 0; mode < 6; mode++)
+            {
+                const uint32_t a = 0x80ff7f01u;
+                const uint32_t b = 0xff007f80u;
+                const uint32_t accumulator = operation % 3 == 1 ? 0xfffffff0u
+                    : mode % 2 == 0 ? 0x80000010u : 0x7ffffff0u;
+                const uint32_t constant = mode == 5 ? 0x80ff007fu : 0x01020304u;
+                const uint32_t lhs = mode == 1 || mode >= 3 ? constant : a;
+                const uint32_t rhs = mode == 2 || mode == 3 ? constant : b;
+                const uint32_t expected = constant_dot_expected(lhs, rhs, accumulator, operation);
+                CHECK_VK(MapMemory(device, memories[0], 0, buffer_size, 0, (void**)&integer_dot_input));
+                integer_dot_input[0] = a;
+                integer_dot_input[1] = b;
+                integer_dot_input[2] = accumulator;
+                CHECK_VK(FlushMappedMemoryRanges(device, 1, &input_range));
+                UnmapMemory(device, memories[0]);
+
+                const std::vector<uint32_t> constant_spirv = make_constant_dot_shader(operation, mode);
+                integer_dot_shader_create_info.codeSize = constant_spirv.size() * sizeof(uint32_t);
+                integer_dot_shader_create_info.pCode = constant_spirv.data();
+                CHECK_VK(CreateShaderModule(device, &integer_dot_shader_create_info, 0, &integer_dot_shader));
+                integer_dot_pipeline_create_info.stage.module = integer_dot_shader;
+                VkSpecializationMapEntry constant_entry = {7, 0, sizeof(uint32_t)};
+                VkSpecializationInfo constant_specialization = {1, &constant_entry, sizeof(uint32_t), &constant};
+                integer_dot_pipeline_create_info.stage.pSpecializationInfo = mode == 5 ? &constant_specialization : 0;
+                CHECK_VK(CreateComputePipelines(device, VK_NULL_HANDLE, 1, &integer_dot_pipeline_create_info, 0, &integer_dot_pipeline));
+
+                CHECK_VK(ResetCommandBuffer(command_buffer, 0));
+                CHECK_VK(BeginCommandBuffer(command_buffer, &begin_info));
+                CmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, integer_dot_pipeline);
+                CmdPushDescriptorSetWithTemplateKHR(command_buffer, descriptor_template, pipeline_layout, 0, &descriptor_data);
+                CmdDispatch(command_buffer, 1, 1, 1);
+                CHECK_VK(EndCommandBuffer(command_buffer));
+                CHECK_VK(ResetFences(device, 1, &fence));
+                CHECK_VK(QueueSubmit(queue, 1, &submit_info, fence));
+                CHECK_VK(WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
+                CHECK_VK(MapMemory(device, memories[0], 0, buffer_size, 0, (void**)&integer_dot_input));
+                CHECK_VK(InvalidateMappedMemoryRanges(device, 1, &input_range));
+                const uint32_t actual = integer_dot_input[2];
+                UnmapMemory(device, memories[0]);
+                if (actual != expected)
+                {
+                    fprintf(stderr, "constant packed dot operation %u mode %u mismatch: got %08x expected %08x\n",
+                            operation, mode, actual, expected);
+                    return 1;
+                }
+                DestroyPipeline(device, integer_dot_pipeline, 0);
+                DestroyShaderModule(device, integer_dot_shader, 0);
+            }
+        }
+        printf("[nikki-test] packed-integer-dot-constants: PASS (36 GPU output cases)\n");
     }
     else
     {
         printf("[nikki-test] packed-integer-dot: SKIP (feature unavailable)\n");
+        printf("[nikki-test] packed-integer-dot-constants: SKIP (feature unavailable)\n");
+    }
+
+    if (matrix_binding_test_supported && shader_f16_supported)
+    {
+        // Keep this separate from the deliberately odd-sized generic buffers.
+        // A runtime float[] only has a 4-byte ordinary minimum, but storing a
+        // 16x16 FP16 matrix requires 512 bytes in the WebGPU pipeline layout.
+        const VkDeviceSize matrix_bytes = 16 * 16 * sizeof(uint16_t);
+        VkBufferCreateInfo matrix_buffer_info = {};
+        matrix_buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        matrix_buffer_info.size = matrix_bytes;
+        matrix_buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        matrix_buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkBuffer matrix_buffer = VK_NULL_HANDLE;
+        CHECK_VK(CreateBuffer(device, &matrix_buffer_info, 0, &matrix_buffer));
+        VkMemoryRequirements matrix_requirements;
+        GetBufferMemoryRequirements(device, matrix_buffer, &matrix_requirements);
+        if (!(matrix_requirements.memoryTypeBits & (1u << host_memory_type)))
+        {
+            fprintf(stderr, "matrix buffer has no compatible host-visible memory\n");
+            return 1;
+        }
+        VkMemoryAllocateInfo matrix_allocate_info = {};
+        matrix_allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        matrix_allocate_info.allocationSize = matrix_requirements.size;
+        matrix_allocate_info.memoryTypeIndex = host_memory_type;
+        VkDeviceMemory matrix_memory = VK_NULL_HANDLE;
+        CHECK_VK(AllocateMemory(device, &matrix_allocate_info, 0, &matrix_memory));
+        CHECK_VK(BindBufferMemory(device, matrix_buffer, matrix_memory, 0));
+        void* matrix_mapped = 0;
+        CHECK_VK(MapMemory(device, matrix_memory, 0, matrix_bytes, 0, &matrix_mapped));
+        memset(matrix_mapped, 0, matrix_bytes);
+        VkMappedMemoryRange matrix_range = {};
+        matrix_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        matrix_range.memory = matrix_memory;
+        matrix_range.size = matrix_bytes;
+        CHECK_VK(FlushMappedMemoryRanges(device, 1, &matrix_range));
+        UnmapMemory(device, matrix_memory);
+
+        std::vector<uint32_t> matrix_spirv(
+            cooperative_matrix_binding_spv,
+            cooperative_matrix_binding_spv + sizeof(cooperative_matrix_binding_spv) / sizeof(uint32_t));
+        // Run exactly one subgroup, so stores from different subgroups cannot race.
+        for (size_t offset = 5; offset < matrix_spirv.size(); offset += matrix_spirv[offset] >> 16)
+        {
+            if ((matrix_spirv[offset] & 0xffff) == 16 && matrix_spirv[offset + 2] == 17)
+                matrix_spirv[offset + 3] = subgroup_properties.subgroupSize;
+        }
+        VkShaderModuleCreateInfo matrix_shader_info = shader_module_create_info;
+        matrix_shader_info.codeSize = matrix_spirv.size() * sizeof(uint32_t);
+        matrix_shader_info.pCode = matrix_spirv.data();
+        VkShaderModule matrix_shader = VK_NULL_HANDLE;
+        CHECK_VK(CreateShaderModule(device, &matrix_shader_info, 0, &matrix_shader));
+        VkPipelineShaderStageRequiredSubgroupSizeCreateInfoEXT matrix_subgroup_size = {};
+        matrix_subgroup_size.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO_EXT;
+        matrix_subgroup_size.requiredSubgroupSize = subgroup_properties.subgroupSize;
+        VkComputePipelineCreateInfo matrix_pipeline_info = pipeline_create_info;
+        matrix_pipeline_info.stage.module = matrix_shader;
+        matrix_pipeline_info.stage.pNext = subgroup_size_control_supported ? &matrix_subgroup_size : 0;
+        VkPipeline matrix_pipeline = VK_NULL_HANDLE;
+        // Once the exact matrix configuration is advertised, pipeline failures
+        // are regressions, not an excuse to skip the execution checks.
+        CHECK_VK(CreateComputePipelines(device, VK_NULL_HANDLE, 1, &matrix_pipeline_info, 0, &matrix_pipeline));
+
+        VkDescriptorBufferInfo matrix_descriptor = {};
+        matrix_descriptor.buffer = matrix_buffer;
+        VkWriteDescriptorSet matrix_write = {};
+        matrix_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        matrix_write.dstBinding = 0;
+        matrix_write.descriptorCount = 1;
+        matrix_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        matrix_write.pBufferInfo = &matrix_descriptor;
+        const VkDeviceSize matrix_ranges[] = {4, matrix_bytes - 4, matrix_bytes};
+        for (unsigned i = 0; i < 3; i++)
+        {
+            matrix_descriptor.range = matrix_ranges[i];
+            CHECK_VK(ResetCommandBuffer(command_buffer, 0));
+            CHECK_VK(BeginCommandBuffer(command_buffer, &begin_info));
+            CmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, matrix_pipeline);
+            CmdPushDescriptorSetKHR(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &matrix_write);
+            CmdDispatch(command_buffer, 1, 1, 1);
+            const VkResult end_result = EndCommandBuffer(command_buffer);
+            if (i < 2)
+            {
+                if (end_result != VK_ERROR_INITIALIZATION_FAILED)
+                {
+                    fprintf(stderr, "matrix binding range %llu was not rejected: %d\n",
+                            (unsigned long long)matrix_ranges[i], end_result);
+                    return 1;
+                }
+            }
+            else
+            {
+                CHECK_VK(end_result);
+                CHECK_VK(ResetFences(device, 1, &fence));
+                CHECK_VK(QueueSubmit(queue, 1, &submit_info, fence));
+                CHECK_VK(WaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
+            }
+        }
+        CHECK_VK(MapMemory(device, matrix_memory, 0, matrix_bytes, 0, &matrix_mapped));
+        CHECK_VK(InvalidateMappedMemoryRanges(device, 1, &matrix_range));
+        const uint16_t* matrix_output = (const uint16_t*)matrix_mapped;
+        for (unsigned i = 0; i < 16 * 16; i++)
+        {
+            if (matrix_output[i] != 0x3c00) // FP16 1.0
+            {
+                fprintf(stderr, "matrix binding output %u mismatch: got %04x expected 3c00\n", i, matrix_output[i]);
+                return 1;
+            }
+        }
+        UnmapMemory(device, matrix_memory);
+        DestroyPipeline(device, matrix_pipeline, 0);
+        DestroyShaderModule(device, matrix_shader, 0);
+        DestroyBuffer(device, matrix_buffer, 0);
+        FreeMemory(device, matrix_memory, 0);
+        printf("[nikki-test] cooperative-matrix-binding-range: PASS (4/508-byte ranges rejected, 512-byte range executed, 256 FP16 outputs)\n");
+    }
+    else
+    {
+        printf("[nikki-test] cooperative-matrix-binding-range: SKIP (16x16x16 FP16 matrix configuration unavailable)\n");
     }
 
     VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;

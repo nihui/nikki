@@ -1,0 +1,23 @@
+--- a/src/tint/lang/wgsl/writer/ir_to_program/ir_to_program.cc
++++ b/src/tint/lang/wgsl/writer/ir_to_program/ir_to_program.cc
+@@ -77,6 +77,8 @@
+ #include "src/tint/lang/core/type/depth_multisampled_texture.h"
+ #include "src/tint/lang/core/type/depth_texture.h"
+ #include "src/tint/lang/core/type/input_attachment.h"
++#include "src/tint/lang/core/type/i8.h"
++#include "src/tint/lang/core/type/u8.h"
+ #include "src/tint/lang/core/type/multisampled_texture.h"
+ #include "src/tint/lang/core/type/pointer.h"
+ #include "src/tint/lang/core/type/reference.h"
+@@ -1114,7 +1116,10 @@
+             },  //
+             [&](const core::type::SubgroupMatrix* m) {
+                 Enable(wgsl::Extension::kChromiumExperimentalSubgroupMatrix);
+-                auto el = Type(m->Type());
++                // i8/u8 are valid matrix component types, not WGSL scalar types.
++                auto el = m->Type()->Is<core::type::I8>() ? b.ty.i8()
++                          : m->Type()->Is<core::type::U8>() ? b.ty.u8()
++                                                         : Type(m->Type());
+                 return b.ty.subgroup_matrix(m->Kind(), el, m->Columns(), m->Rows());
+             },  //
+             [&](const core::type::BindingArray* ba) {
